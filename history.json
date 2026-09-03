@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 2,
+  "repository": "tarkky/winpodx",
+  "repositoryId": "1276433680",
+  "repositoryCreatedAt": "2026-06-22",
+  "updatedAt": "2026-09-03T08:07:52.291Z",
+  "observedFrom": "2026-09-03",
+  "backfill": {
+    "generatedAt": "2026-09-03T08:07:52.291Z",
+    "basis": "currently-active-stargazers",
+    "limitation": "Stars removed before the first collection cannot be recovered."
+  },
+  "points": [
+    {
+      "date": "2026-09-03",
+      "count": 0,
+      "source": "observed"
+    }
+  ]
+}
