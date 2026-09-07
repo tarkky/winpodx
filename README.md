@@ -4,31 +4,31 @@
 
 ### Click an app. Word opens. That's it.
 
-<p>Native Linux windows for every Windows app — real icons, real <code>WM_CLASS</code>,<br>
-pin-to-taskbar. FreeRDP RemoteApp + dockur/windows. Zero config.</p>
+<p>Windows apps as native Linux windows — real icons, real <code>WM_CLASS</code>, pin-to-taskbar.<br>
+FreeRDP RemoteApp over dockur/windows. No permanent full-screen desktop, no manual setup.</p>
 
-<pre><code># Latest stable release (default)
+<pre><code># Install (latest stable release)
 curl -fsSL https://raw.githubusercontent.com/kernalix7/winpodx/main/install.sh | bash
 
-# Latest main HEAD (development; may be unstable)
+# Development branch (may be unstable)
 curl -fsSL https://raw.githubusercontent.com/kernalix7/winpodx/main/install.sh | bash -s -- --main
 
-# Uninstall (keeps Windows VM data; pass --purge to wipe everything)
+# Uninstall (keeps the Windows VM; add --purge to wipe everything)
 curl -fsSL https://raw.githubusercontent.com/kernalix7/winpodx/main/uninstall.sh | bash -s -- --confirm</code></pre>
 
 <a href="docs/images/demo.png">
-  <img src="docs/images/demo.png" alt="WinPodX in action — Windows apps as native Linux windows on KDE" width="720">
+  <img src="docs/images/demo.png" alt="Windows apps as native Linux windows on KDE" width="720">
 </a>
 
-<sub>Windows About / Task Manager / PowerShell each in their own Linux window, alongside the WinPodX Dashboard (live Pod / RAM / CPU gauges, workspace tiles).</sub>
+<sub>Windows About / Task Manager / PowerShell, each in its own Linux window, next to the WinPodX Dashboard.</sub>
 
 [![Beta](https://img.shields.io/badge/status-beta-orange?style=for-the-badge)](#status-beta)
 [![Latest](https://img.shields.io/github/v/release/kernalix7/winpodx?include_prereleases&style=for-the-badge&label=latest&color=2962FF)](https://github.com/kernalix7/winpodx/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/kernalix7/winpodx/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/kernalix7/winpodx/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-3500%2B-2EA44F?style=for-the-badge)](#testing)
+[![tests](https://img.shields.io/badge/tests-4000%2B-2EA44F?style=for-the-badge)](#testing)
 
 [![license](https://img.shields.io/github/license/kernalix7/winpodx?style=flat-square&color=blue)](LICENSE)
-[![python](https://img.shields.io/badge/python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![stars](https://img.shields.io/github/stars/kernalix7/winpodx?style=flat-square&color=FFD93D&logo=github&logoColor=white)](https://github.com/kernalix7/winpodx/stargazers)
 [![downloads](https://img.shields.io/github/downloads/kernalix7/winpodx/total?style=flat-square&color=2EA44F)](https://github.com/kernalix7/winpodx/releases)
 
@@ -44,53 +44,51 @@ curl -fsSL https://raw.githubusercontent.com/kernalix7/winpodx/main/uninstall.sh
 [![NixOS](https://img.shields.io/badge/NixOS-5277C3?style=flat-square&logo=nixos&logoColor=white)](docs/INSTALL.md#nix)
 [![AppImage](https://img.shields.io/badge/AppImage-any%20distro-6F42C1?style=flat-square&logo=appimage&logoColor=white)](docs/INSTALL.md)
 
-<sub>**English** &nbsp;·&nbsp; [한국어](docs/README.ko.md) &nbsp;·&nbsp; [Install](docs/INSTALL.md) &nbsp;·&nbsp; [Usage](docs/USAGE.md) &nbsp;·&nbsp; [Features](docs/FEATURES.md) &nbsp;·&nbsp; [Architecture](docs/ARCHITECTURE.md) &nbsp;·&nbsp; [Comparison](docs/COMPARISON.md)</sub>
+<sub>**English** · [한국어](docs/README.ko.md) · [Install](docs/INSTALL.md) · [Usage](docs/USAGE.md) · [Features](docs/FEATURES.md) · [Architecture](docs/ARCHITECTURE.md) · [Comparison](docs/COMPARISON.md)</sub>
 
 </div>
 
 ---
 
-**Contents:** [Minimum requirements](#minimum-requirements) · [Quick install](#quick-install) · [First-time setup](#first-time-setup) · [Launch](#launch) · [Key features](#key-features) · [Documentation](#documentation) · [Supported distros](#supported-distros) · [Testing](#testing) · [Contributing](#contributing)
+**Contents:** [Requirements](#requirements) · [Install](#install) · [Launch](#launch) · [Desktop app](#desktop-app) · [Key features](#key-features) · [Documentation](#documentation) · [Testing](#testing) · [Contributing](#contributing-and-license)
 
 ---
 
 > ### Status: Beta
 >
-> WinPodX is in active development (**v0.10.4**). Highlights of the recent releases:
+> WinPodX is in active development, **v0.11.0**.
 >
-> - **Bare-metal disguise** (0.7.0, opt-in): the guest reads like a physical machine to VM-detection software, al-khaser 0.82-verified
-> - **Auto file associations + app management** (0.7.1): discovered apps appear in "Open with…", and the GUI gains hide/remove/restore
-> - **Quick app launcher** (0.7.1): `winpodx launch` — a Start-menu-style picker bindable to a hotkey
-> - **URL-scheme links** (0.9.0): `mailto:` / app schemes from Linux route to the right Windows app
-> - **Reverse-open on the VM itself** (0.7.3): the guest `C:` is shared so a host app edits the real guest file
+> - A Windows 11 Settings-style desktop app: adaptive navigation, custom window chrome, and a theme that follows your desktop's light or dark scheme
+> - Dashboard for pod state, resource use, running apps, and pinned apps in one view
+> - dockur HTTP provisioning progress in the CLI and GUI, with a log-based fallback
+> - `winpodx launch` as a compact Start-style flyout, plus a refreshed tray launcher
+> - Python 3.10 is the new minimum
 >
-> The full history is in the [CHANGELOG](CHANGELOG.md).
+> Full detail in the [CHANGELOG](CHANGELOG.md).
 
-**No full-screen RDP.** Each Windows app becomes its own Linux window with its real icon — pinnable, alt-tabbable, file-associated, both directions. Drop into a full Windows desktop only when you actually want one (`winpodx app run desktop`).
+## What you get
 
-WinPodX runs a Windows container (via [dockur/windows](https://github.com/dockur/windows)) in the background and presents Windows apps as native Linux applications through FreeRDP RemoteApp, while a bearer-authed HTTP agent inside the guest handles the host→guest command channel without flashing a PowerShell window. The reverse direction — Linux apps surfaced in the Windows "Open with…" menu — is handled by a host-side listener that consumes JSON requests written by per-slug Rust shims inside the guest. **Near-zero external Python dependencies** (stdlib only on Python 3.11+; one pure-Python `tomli` fallback on 3.9/3.10).
+Each Windows app opens as its own Linux window, keeping its icon, taskbar entry, and file associations. Clipboard, audio, printers, and your home directory are shared both ways. You only see a full Windows desktop when you ask for one with `winpodx app run desktop`.
 
-## Minimum requirements
+WinPodX runs Windows in a container in the background and starts it on demand — the pod pauses when idle and wakes on your next launch.
 
-**Before installing**, make sure your machine actually supports virtualisation. WinPodX runs Windows in a KVM-backed container; without these three, the install will run to completion but Windows will never boot.
+## Requirements
 
-| Requirement | How to check | Fix |
+Virtualization must be available before Windows can boot. These three checks catch almost every "installed fine but Windows never started" report:
+
+| Requirement | Check | Fix |
 |---|---|---|
-| **Intel VT-x or AMD-V enabled in BIOS / UEFI** | `lscpu \| grep -i virtualization` shows `VT-x` or `AMD-V` | Reboot → firmware setup → enable "Intel Virtualization Technology" / "SVM Mode" / "VT-x". OFF by default on many laptops. |
-| **kvm kernel module loaded** | `lsmod \| grep kvm` lists `kvm_intel` or `kvm_amd` | `sudo modprobe kvm_intel` (Intel) or `sudo modprobe kvm_amd` (AMD). Auto-loads on next boot once BIOS allows it. |
-| **Your user is in the `kvm` group** | `id -nG \| tr ' ' '\n' \| grep kvm` returns `kvm` | `sudo usermod -aG kvm $USER`, then log out + back in. |
+| Intel VT-x or AMD-V enabled | `lscpu \| grep -i virtualization` | Enable Intel Virtualization Technology, SVM Mode, or VT-x in firmware. |
+| KVM module loaded | `lsmod \| grep kvm` | `sudo modprobe kvm_intel` or `sudo modprobe kvm_amd`. |
+| Your user can reach KVM | `id -nG \| tr ' ' '\n' \| grep kvm` | `sudo usermod -aG kvm $USER`, then log out and back in. |
 
-Hardware: x86_64 or aarch64 CPU with virtualisation extensions, 8 GB+ RAM (12 GB+ recommended), and enough free disk for the configured Windows disk (64 GB by default) plus the install ISO. `install.sh` aborts with the same diagnostic if `/dev/kvm` is missing after the package install step — most "install ran fine but Windows never boots" bug reports trace back to one of the rows above. Rootless Podman also needs standalone `podman-compose` and entries for your user in `/etc/subuid` and `/etc/subgid`; `winpodx setup-host` checks and fixes the group/subid host setup.
+**Hardware:** x86_64 or aarch64 with virtualization extensions, 8 GB RAM (12 GB recommended), and room for the 64 GB default Windows disk plus an installer ISO.
 
-## Quick install
+**Software:** FreeRDP 3+ and Podman with a compose provider, or Docker. Rootless Podman also needs `/etc/subuid` and `/etc/subgid` entries. Run `winpodx setup-host` to fix the group and subuid setup in one prompt, and `winpodx doctor` any time to see what is still missing.
 
-One-liner (any supported Linux distro):
+## Install
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/kernalix7/winpodx/main/install.sh | bash
-```
-
-Or via a native package manager:
+The curl one-liner in the header works on every supported distribution and finishes setup for you. Native packages are also available:
 
 ```bash
 # openSUSE Tumbleweed / Leap / Slowroll
@@ -101,10 +99,10 @@ sudo zypper install winpodx
 sudo dnf config-manager addrepo --from-repofile=https://download.opensuse.org/repositories/home:/Kernalix7/Fedora_43/home:Kernalix7.repo
 sudo dnf install winpodx
 
-# Debian / Ubuntu — grab the matching .deb from the latest release
+# Debian / Ubuntu — the matching .deb from the latest release
 sudo apt install ./winpodx_<version>_all_debian13.deb
 
-# AlmaLinux / Rocky / RHEL 9 / 10 — grab the matching .rpm
+# AlmaLinux / Rocky / RHEL 9 / 10 — the matching .rpm
 sudo dnf install ./winpodx-<version>-0.noarch.el10.rpm
 
 # Arch
@@ -113,193 +111,96 @@ yay -S winpodx
 # Nix
 nix run github:kernalix7/winpodx
 
-# AppImage (distro-agnostic x86_64, single file)
-# Download winpodx-x86_64.AppImage from the latest GitHub release
+# AppImage — one file, any x86_64 distro
 chmod +x winpodx-x86_64.AppImage
 ./winpodx-x86_64.AppImage setup
 ```
 
-> **After a package-manager / AppImage install:** run `winpodx setup` once to generate `~/.config/winpodx/winpodx.toml` + compose.yaml and complete first provisioning. The curl one-liner does this for you; package installs ship the binary only so `apt install` / `dnf install` / `yay -S` / first AppImage launch don't trigger a long Windows ISO download out of the blue. After setup, launch an app with `winpodx app run desktop`.
->
-> The Thin AppImage (0.6.0) bundles Python + Qt + winpodx + FreeRDP only — the container runtime lives on the host (`podman` ≥ 4 recommended, `docker` also supported) so the AppImage no longer fights a host stack you already have (#357, #363). Pre-0.6.0 fat AppImages bundled the whole podman stack and shadowed the host's. Host-side requirements left: a container runtime via your package manager, `/dev/kvm`, `kvm` group membership, and `/etc/subuid` / `/etc/subgid` for rootless Podman. `winpodx setup-host` fixes the kvm / subuid bits via a single `pkexec` prompt; `winpodx doctor` surfaces anything still missing.
->
-> **Updating.** Re-run the same one-liner to pick up the latest release — it detects the existing install and upgrades it in place, keeping your config and Windows VM; a running tray / GUI restarts itself so the new version takes effect. This works unmodified on Bazzite and other rpm-ostree hosts too (no `--main`, no VM wipe). Installed via a package manager or the AppImage instead? Update it the same way you installed it — through your package manager, or by grabbing the newer `.deb` / `.rpm` / AppImage from the [latest release](https://github.com/kernalix7/winpodx/releases/latest).
-
-See [docs/INSTALL.md](docs/INSTALL.md) for offline / air-gapped builds, source installs, version pinning, updating, and uninstall.
-
-## First-time setup
-
-If you used the `curl install.sh` one-liner, setup and first provisioning already ran -- skip to [Launch](#launch). For every other install path (package managers, AppImage, source, wheel) run setup once before the first app launch:
+**After a package, AppImage, source, or wheel install, run setup once.** Package installs deliberately ship the binary only, so `apt install` never triggers a long Windows download on its own:
 
 ```bash
-# Auto setup -- host-detected defaults, no prompts
-winpodx setup
-
-# Interactive wizard -- pick backend, cores, RAM, edition, language, timezone, debloat preset
-winpodx setup --customize
+winpodx setup              # host-detected defaults, no prompts
+winpodx setup --customize  # pick backend, cores, RAM, edition, language, timezone, debloat
 ```
 
-Setup writes `~/.config/winpodx/winpodx.toml` + `compose.yaml`, registers the GUI launcher, and confirms the host has FreeRDP + Podman / Docker + KVM. If any of those are missing, the output ends with a per-distro install command (e.g. `sudo apt install xfreerdp3 podman podman-compose` on Debian / Ubuntu, `sudo dnf install ...` on Fedora) -- run it and re-run `winpodx setup`.
+Setup writes the configuration, verifies the host, provisions Windows, discovers your apps, and registers desktop entries.
 
-Setup provisions the pod, pulls the dockur image, runs the Windows ISO download + Sysprep + OEM apply, then applies guest fixes, discovers apps, and configures reverse-open. `winpodx pod wait-ready --logs` is available to tail container progress when you start or recover the pod separately:
+**Updating:** re-run the curl installer to upgrade a curl install in place, keeping your config and VM (this works on Bazzite and other rpm-ostree hosts too). Package and AppImage installs update through whatever you installed them with.
 
-```bash
-winpodx app run desktop          # Launch after setup; subsequent launches are near-instant
-winpodx pod wait-ready --logs    # Optional: watch a separate cold-start/recovery live
-```
+On RHEL 9, AlmaLinux 9, and Rocky Linux 9 the default `python3` is older than WinPodX supports; the el9 package pulls in the Python 3.11 stack from AppStream automatically.
 
-Run `winpodx doctor` any time afterwards to re-check host state and surface the next fix command if something drifts:
-
-```bash
-winpodx doctor                   # Read-only -- prints what would need fixing
-winpodx guest apply-fixes        # Re-applies guest-side runtime fixes (RDP timeouts, NIC power-save, etc.)
-```
+Offline and air-gapped installs, building from source, Nix, and full uninstall are covered in [INSTALL.md](docs/INSTALL.md).
 
 ## Launch
 
 ```bash
 winpodx app run word              # Launch Word
-winpodx app run word ~/doc.docx   # Open a file
+winpodx app run word ~/doc.docx   # Open a file with it
 winpodx app run desktop           # Full Windows desktop
-winpodx launch                    # Quick app launcher (Start-menu style picker)
+winpodx launch                    # Searchable Start-style app picker
+winpodx gui                       # Desktop app
 ```
 
-Or just click an app icon in your application menu. `winpodx launch` opens a searchable picker of your Windows apps — bind it to a desktop-environment custom shortcut (KDE: *System Settings → Shortcuts → Custom*; GNOME: *Settings → Keyboard → Custom Shortcuts*) for a system-wide hotkey. See [docs/USAGE.md](docs/USAGE.md) for the full CLI, the Qt6 GUI, health checks, and configuration.
+Or just click a Windows app in your application menu — WinPodX installs real desktop entries for everything it discovers. Bind `winpodx launch` to a custom shortcut (KDE: *System Settings → Shortcuts*; GNOME: *Settings → Keyboard*) for a system-wide hotkey.
+
+## Desktop app
+
+<a href="docs/images/gui-dashboard.png">
+  <img src="docs/images/gui-dashboard.png" alt="WinPodX Dashboard" width="720">
+</a>
+
+`winpodx gui` opens a Windows 11 Settings-style shell with eight pages:
+
+| Page | What it holds |
+|---|---|
+| **Dashboard** | Pod state with Start/Stop, RAM / CPU / disk rings, quick actions, running sessions, pinned apps |
+| **Applications** | Start Menu tiles with search, category counts, grid or list view, and per-app actions |
+| **Settings** | Connection, hardware, Windows Update, integration, and language, grouped by intent, with a marker until you save |
+| **Tools** | Pod and guest operations — suspend, resume, grow disk, debloat, apply fixes |
+| **Terminal** | Pod and app logs with a filtered command bar |
+| **Info** | Version, health checks, and one-click copyable diagnostics |
+| **Devices** | USB and PCI passthrough, grouped by bus, with risky assignments flagged |
+| **License** | License text and third-party acknowledgements |
+
+The navigation pane is 320 px wide normally and collapses to a 48 px icon rail below 1100 px, where the hamburger button overlays it on top of the content. The theme follows your desktop's light or dark preference; set `WINPODX_COLOR_SCHEME=light|dark` to override it, or `WINPODX_NATIVE_TITLEBAR=1` to use your window manager's decorations instead of the built-in title bar. See the [GUI tour](docs/USAGE.md#qt6-gui-tour) for the rest.
 
 ## Key features
 
-<table>
-<tr><td colspan="2">
-
-**Bare-metal disguise (VM-detection avoidance)** — opt-in, off by default
-- Makes the Windows guest read as a **physical machine** to software that refuses to run under a detected hypervisor — Nvidia GPU-passthrough "code 43", launch-gate VM checks, VM-hostile installers
-- `pod.disguise_level balanced | max`: **balanced** hides the CPUID hypervisor bit + KVM signature and mirrors the host's real SMBIOS/DMI; **max** ("Hardened") adds a locally-built patched-QEMU image (`winpodx disguise build-image`) that rewrites the ACPI / disk / sensor / USB fingerprints and drops the virtio + Red-Hat PCI tells (keeps USB3)
-- Host-derived strings stay in the **local image only** (never committed to git); serial / UUID / asset-tag are never read
-- **al-khaser 0.82-verified** — enable with `winpodx config set pod.disguise_level max` or the GUI Settings "Bare-metal" selector
-- [Details →](docs/FEATURES.md#bare-metal-disguise-vm-detection-avoidance)
-
-</td></tr>
-<tr><td width="50%">
-
-**Reverse-open**
-- Linux apps appear in the Windows guest's right-click "Open with…" menu by default
-- Correct per-app icons in both the short menu and the long "Choose another app" dialog
-- Selecting one round-trips the file open to host `xdg-open`
-- Auto-discovers host-side Linux apps + their MIME associations from freedesktop standards
-- Manage via `winpodx host-open` CLI or the GUI Settings panel
-- [Details →](docs/FEATURES.md#reverse-open-linux-apps-in-windows-open-with)
-
-</td><td width="50%">
-
-**Seamless app windows**
-- RemoteApp (RAIL) renders each Windows app as a native Linux window — no full desktop
-- Per-app taskbar icons via `WM_CLASS` matching (`/wm-class:<stem>` + `StartupWMClass`)
-- Bidirectional file associations: double-click `.docx` in your file manager → Word opens
-- Multi-session RDP: bundled [rdprrap](https://github.com/kernalix7/rdprrap) auto-enables up to 25 independent sessions by default (configurable from 1 to 50)
-- Multi-monitor RAIL: a remote-app window keeps working input when dragged onto a second monitor — on by default (`cfg.rdp.multimon`, default `span`)
-- RAIL prerequisites set automatically during unattended install
-
-</td></tr>
-<tr><td width="50%">
-
-**Zero-config launch**
-- First app click auto-provisions everything: config, container, desktop entries
-- Auto-discovery during first provisioning registers Start-Menu-visible Win32 and UWP/MSIX apps with their real icons; `desktop.full_app_scan = true` also scans Registry App Paths and Chocolatey/Scoop shims
-- Manual rescan any time via `winpodx app refresh` or the GUI Refresh button
-- Multi-backend: Podman (default), Docker, manual RDP (the libvirt backend was dropped in 0.6.0 — stay on ≤0.5.x or use the manual backend for your own libvirt domain)
-
-</td><td width="50%">
-
-**Peripherals & sharing**
-- **Clipboard**: bidirectional copy-paste (text + images) — on by default
-- **Sound**: RDP audio streaming (`/sound:sys:alsa`) — on by default
-- **Printer**: Linux printers shared to Windows — on by default
-- **Home directory**: shared as `\\tsclient\home`
-- **USB drives**: removable media is shared at `\\tsclient\media\<LABEL>`; the USB desktop shortcut always resolves, opening an empty folder when nothing is mounted instead of erroring. Raw devices use USB passthrough and receive their own Windows drive letter
-- **Host USB / PCI device passthrough**: pass real host devices into the Windows guest — `winpodx device list / attach <id> / detach <id>`, a GUI "Devices" tab (two-column host↔guest mover), and a system-tray USB switcher. USB hot-plugs live (`cfg.pod.usb_live`, default on); PCI is boot-added and needs a guest restart plus a `--force` / dialog confirmation
-
-</td></tr>
-<tr><td width="50%">
-
-**Automation & security**
-- Auto suspend / resume: container pauses when idle, resumes on next launch
-- Pod auto-start on login (opt-in): `winpodx autostart on` installs a tray autostart entry so the pod starts/resumes at login — off by default (`autostart off|status`, or a GUI Settings checkbox)
-- UNRESPONSIVE → recover: a stalled RDP guest is detected on `RUNNING → UNRESPONSIVE` and self-healed via an in-guest TermService cycle, no `pod restart` needed
-- Host-adaptive Windows-on-KVM tuning profile: `+invtsc`, `platform_tick` and more, gated by host capability — `tuning_profile = auto|safe|off`
-- Password auto-rotation: 20-char cryptographic password, 7-day cycle with atomic rollback
-- Smart DPI scaling: auto-detects from GNOME, KDE, Sway, Hyprland, Cinnamon, xrdb
-- Windows debloat: telemetry, ads, Cortana, search indexing disabled by default
-- FreeRDP `extra_flags` allowlist (regex-validated) as the user-input safety boundary
-- Time sync: force Windows clock resync after host sleep/wake
-
-</td><td width="50%">
-
-**Operations & resilience**
-- Multilingual UI: tray / GUI / CLI fully translated to 7 languages (en / ko / zh / ja / de / fr / it), auto-detected from `$LANG` — override with `winpodx language <code>` or GUI Settings → "WinPodX UI language"
-- Windows disk auto-grow: C: grows itself when it fills past a threshold while idle, bounded by host free space — or grow on demand (`winpodx install grow-disk [SIZE]`, `winpodx install disk-usage`, GUI Tools → Grow Disk)
-- Guest sync: push updated agent / urlacl / rdprrap / fixes into a running guest after a host upgrade — automatic once per pod start, or `winpodx guest sync [--force]`
-- Offline / air-gapped install (`--source` + `--image-tar`)
-- One-line uninstall (keeps Windows VM data unless `--purge`)
-- Health checks via `winpodx doctor` (deps / pod / RDP / agent / disk / round-trip / password age; `--json` for machine-readable, `--quick` for cheap subset, `--fix` for idempotent auto-remediation of common findings)
-- Redesigned Qt6 GUI: a left Start-menu-style navigation sidebar + a **Dashboard** home with live Pod / RAM / CPU ring gauges, disk usage, an auto-recovery status card, pinned/recent workspace tiles, and a reverse-open toggle; the app launcher is the "Applications" page, alongside Devices / Settings / Tools / Terminal / Info — plus a lighter system tray. In-house SVG icon set, responsive reflow, and a hero search that doubles as a command bar
-- Stdlib-leaning Python (no pip-deps on 3.11+; one `tomli` fallback on 3.9 / 3.10)
-
-</td></tr>
-</table>
-
-See [docs/FEATURES.md](docs/FEATURES.md) for deep dives, including multi-session RDP internals, app profile schema, and the reverse-open architecture.
+| Area | What it does |
+|---|---|
+| **Seamless apps** | RemoteApp opens each app as a native window with real icons, `WM_CLASS`, taskbar integration, file associations, multi-monitor support, and up to 50 concurrent RDP sessions. |
+| **App discovery** | Imports Start Menu-visible Win32 and UWP apps with their icons. Rescan with `winpodx app refresh` or from Applications. |
+| **Sharing** | Two-way clipboard, audio, printers, `\\tsclient\home`, removable media, and USB or PCI passthrough. |
+| **Reverse-open** | Linux apps appear in the Windows **Open with** menu and receive files back on the host through a controlled listener. |
+| **Pod operation** | Podman by default, with Docker and manual RDP supported. Auto-pauses when idle, recovers a stalled guest, rotates passwords, and grows the Windows disk. |
+| **Privacy and tuning** | Optional Windows debloat, host-adaptive KVM tuning, DPI detection, an allowlist for FreeRDP flags, time sync, and optional bare-metal disguise. |
+| **Languages** | CLI, tray, and desktop app in English, Korean, Chinese, Japanese, German, French, and Italian. |
 
 ## Documentation
 
-| Document | What's inside |
-|----------|---------------|
-| [INSTALL.md](docs/INSTALL.md) | Every install path — one-liner, package managers, AppImage, offline, Nix, source |
-| [USAGE.md](docs/USAGE.md) | CLI reference, Qt6 GUI tour, health checks, configuration file |
-| [FEATURES.md](docs/FEATURES.md) | Reverse-open, multi-session RDP, peripherals, app profiles, auto-discovery |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | How it works (diagram), tech stack, source tree, data flows |
-| [COMPARISON.md](docs/COMPARISON.md) | WinPodX vs winapps / LinOffice / winboat, and WinPodX vs Wine |
-| [CHANGELOG.md](CHANGELOG.md) | Full version history |
+| Document | Contents |
+|---|---|
+| [INSTALL.md](docs/INSTALL.md) | Every install path, updating, offline, source, Nix, uninstall |
+| [USAGE.md](docs/USAGE.md) | CLI reference, GUI tour, health checks, configuration |
+| [FEATURES.md](docs/FEATURES.md) | RemoteApp, reverse-open, peripherals, discovery, passthrough |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System diagram, source tree, data flows |
+| [COMPARISON.md](docs/COMPARISON.md) | WinPodX vs winapps, LinOffice, winboat, and Wine |
+| [CHANGELOG.md](CHANGELOG.md) | Version history |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup and workflow |
-| [SECURITY.md](SECURITY.md) | Security disclosure process |
-
-## Supported distros
-
-| Distro | Package manager | Status |
-|--------|-----------------|--------|
-| openSUSE Tumbleweed / Leap 15.6 / Leap 16.0 / Slowroll | zypper | Tested |
-| Fedora 42 / 43 / 44 | dnf | Supported |
-| Fedora Silverblue / Kinoite / Sericea / Bluefin / Bazzite (42 / 43 / 44) | rpm-ostree (OBS, `--apply-live`) | Supported |
-| Debian 12 / 13, Ubuntu 24.04 / 25.04 / 25.10 / 26.04 | apt | Supported |
-| AlmaLinux / Rocky / RHEL 9 / 10 | dnf | Supported |
-| Arch / Manjaro | pacman + `yay -S winpodx` | Supported |
-| NixOS (and Nix on any distro) | nix flake | Supported |
-
-Each release uses a `v*.*.*` packaging tag plus a matching `REL-v*.*.*` release tag. The package workflows build all channels; AUR publication is credential-gated, and assets attach after the GitHub Release exists — see [packaging/](packaging/) for maintainer details.
+| [SECURITY.md](SECURITY.md) | Security reporting process |
 
 ## Testing
 
 ```bash
-# From repo root (no install needed)
 export PYTHONPATH="$PWD/src"
-
-# Parallel — the full 3500+ suite finishes in seconds
-python3 -m pytest tests/ -n auto
-
-# Lint + format
+python3 -m pytest tests/ -n auto     # 4000+ tests, seconds in parallel
 ruff check src/ tests/
 ruff format --check src/ tests/
-
-# Coverage (CI enforces a floor)
-python3 -m pytest tests/ -n auto --cov=winpodx --cov-report=term-missing:skip-covered
 ```
 
-## Contributing
+## Contributing and license
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, branch naming, commit conventions, and CI expectations.
-
-## Security
-
-For security issues, follow the process in [SECURITY.md](SECURITY.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before sending a change; security reports follow [SECURITY.md](SECURITY.md). WinPodX is [MIT licensed](LICENSE), Kim DaeHyun.
 
 ## Star History
 
@@ -319,8 +220,4 @@ If WinPodX makes your Linux desktop a little nicer:
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-F16061?logo=ko-fi&logoColor=white&style=for-the-badge)](https://ko-fi.com/kernalix7)
 [![Fairy](https://img.shields.io/badge/🧚_Fairy-EE6E73?style=for-the-badge&logoColor=white)](https://fairy.hada.io/@kernalix7)
 
-GitHub Sponsors supports recurring or one-time sponsorship; Ko-fi handles international cards and PayPal; fairy.hada.io is a Korean tipping platform. Bug reports, PRs, and stars on the repo are equally appreciated and free.
-
-## License
-
-[MIT](LICENSE) — Kim DaeHyun (kernalix7@kodenet.io)
+GitHub Sponsors handles recurring or one-time sponsorship, Ko-fi covers international cards and PayPal, and fairy.hada.io is a Korean tipping platform. Bug reports, PRs, and stars are just as welcome — and free.
