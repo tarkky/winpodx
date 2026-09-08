@@ -11,6 +11,7 @@ import shutil
 import string
 import tempfile
 from pathlib import Path
+from typing import Final
 
 from winpodx.core.agent import AGENT_PORT
 from winpodx.core.config import Config
@@ -20,6 +21,7 @@ from winpodx.core.devices import (
     qemu_device_args,
 )
 from winpodx.core.guest_disk import GUEST_SMB_PORT, SMB_HOST_PORT
+from winpodx.utils.btrfs import host_storage_is_ssd
 from winpodx.utils.paths import bundle_dir, config_dir
 
 # Two storage-volume modes are now supported (v0.4.x post-#122):
@@ -56,7 +58,7 @@ name: "winpodx"
       RAM_SIZE: "{ram}G"
       CPU_CORES: "{cpu}"
       DISK_SIZE: "{disk_size}"
-      DISK_TYPE: "{disk_type}"
+{disk_rotation_env}      DISK_TYPE: "{disk_type}"
       USERNAME: "{user}"
       PASSWORD: "{password}"
       HOME: "{home}"
@@ -70,6 +72,8 @@ name: "winpodx"
       CPU_FLAGS: "{cpu_flags}"
       VMX: "{vmx}"
       HV: "{hv}"
+      RNG: "{rng}"
+      VM: "{vm}"
       BALLOONING: "N"
       ARGUMENTS: "{qemu_arguments}"
       USER_PORTS: "{user_ports}"
@@ -262,35 +266,15 @@ def _qemu_arguments_for_host(cfg: Config | None = None) -> str:
 
     After the #287 refactor, CPU-related sub-flags (``arch_capabilities``,
     ``+invtsc``, etc.) live in the dedicated ``CPU_FLAGS`` env via
-    :func:`_cpu_flags_for_host`. ``ARGUMENTS`` carries only the QEMU
-    args that don't belong to ``-cpu`` -- currently the virtio-rng
-    device pair (entropy pool seed for fast first-boot CryptoAPI / TLS).
-
-    aarch64 skips the virtio-rng tuning (dockur picks the right device list
-    itself) but still gets device-passthrough args — those are arch-independent.
+    :func:`_cpu_flags_for_host`, and since #853 the RNG device belongs to the
+    base image (see :func:`_rng_env`). What is left here are the QEMU args that
+    have no env of their own: host device passthrough and the disguise's
+    SMBIOS / ACPI table injection.
     """
     if cfg is None:
         return ""
 
     extra_args: list[str] = []
-
-    # CPU/entropy tuning — x86_64 only.
-    if platform.machine() != "aarch64":
-        from winpodx.utils.specs import detect_tuning_capability, recommend_tuning_profile
-
-        cap = detect_tuning_capability(vm_cpu_cores=cfg.pod.cpu_cores, vm_ram_gb=cfg.pod.ram_gb)
-        profile = recommend_tuning_profile(cap, user_pref=cfg.pod.tuning_profile)
-        # Skip the virtio-rng device at the max disguise level — it's a virtio
-        # (VEN_1AF4) PCI device, which would re-add the very ID max is removing.
-        if profile.apply_virtio_rng and not cfg.pod.disguise_max:
-            extra_args.extend(
-                [
-                    "-device",
-                    "virtio-rng-pci,rng=rng0",
-                    "-object",
-                    "rng-random,id=rng0,filename=/dev/urandom",
-                ]
-            )
 
     # Host device passthrough (#286). Device ids are hex-validated by config,
     # so no YAML/shell-dangerous chars reach the ARGUMENTS scalar.
@@ -326,19 +310,69 @@ def _qemu_arguments_for_host(cfg: Config | None = None) -> str:
         # the disguise image.
         extra_args += ["-acpitable", "file=/usr/share/qemu/winpodx-wsmt.aml"]
 
-    # SSD emulation (#606): make the guest disk report as non-rotational so
-    # Windows enables TRIM + skips scheduled defrag and treats it as an SSD
-    # (the Proxmox "SSD emulation" checkbox). `-global <driver>.rotation_rate=1`
-    # sets the property on whichever ATA/SCSI disk device dockur creates; QEMU
-    # ignores a `-global` whose driver isn't instantiated (non-fatal), so it's
-    # safe to set both regardless of the DISK_TYPE bus in use. virtio-blk has no
-    # rotation concept, so this is a no-op there. Disguise-safe: no bus change,
-    # so the disguise's INQUIRY model masking is untouched.
-    if cfg.pod.ssd:
-        extra_args += ["-global", "ide-hd.rotation_rate=1"]
-        extra_args += ["-global", "scsi-hd.rotation_rate=1"]
-
     return " ".join(extra_args)
+
+
+# dockur owns the rotation contract: qemus/qemu's src/disk.sh defaults
+# DISK_ROTATION to "1" and stamps it on each disk as
+# `rotation_rate=$DISK_ROTATION` for both ide-hd and scsi-hd. That per-device
+# property beats a `-global`, so the `-global <driver>.rotation_rate=1` we used
+# to emit for #606 never actually decided anything -- and because dockur's
+# default is 1, `pod.ssd = False` still gave the guest a non-rotational disk
+# (#855). Drive the env instead. 7200 is the conventional rpm for "spinning";
+# any value above 1 reads as rotational to Windows.
+_DISK_ROTATION_SSD: Final = "1"
+_DISK_ROTATION_HDD: Final = "7200"
+
+
+def _rng_env(cfg: Config) -> str:
+    """``RNG:`` env -- ``N`` only at max disguise.
+
+    qemus/qemu's src/config.sh adds ``rng-random`` + ``virtio-rng-pci`` unless
+    this is disabled, so the base image already gives every guest exactly one
+    RNG. WinPodX used to append a second one of its own; worse, max disguise
+    merely skipped *our* copy and left the base image's virtio (VEN_1AF4)
+    device in place, which is the very ID that mode exists to hide (#853).
+    """
+    return "N" if cfg.pod.disguise_max else "Y"
+
+
+def _vm_env(cfg: Config) -> str:
+    """``VM:`` env -- the base image's "hypervisor CPU bit" switch.
+
+    dockur defaults it to ``Y`` and appends ``+hypervisor`` to CPU_FEATURES.
+    Max disguise turns it off at the source instead of relying solely on our
+    ``-hypervisor`` CPU sub-flag winning the last-one-wins race (#853).
+    """
+    return "N" if cfg.pod.disguise_max else "Y"
+
+
+def _disk_rotation_env(cfg: Config) -> str:
+    """Rendered ``DISK_ROTATION:`` line, or an empty string to omit it."""
+    rotation = _disk_rotation(cfg)
+    if rotation is None:
+        return ""
+    return f'      DISK_ROTATION: "{rotation}"\n'
+
+
+def _disk_rotation(cfg: Config) -> str | None:
+    """``DISK_ROTATION`` for the guest disk, or ``None`` to leave it unset.
+
+    ``pod.ssd`` is tri-state: ``True``/``False`` are explicit user choices, and
+    ``None`` (the default) asks the host what its own storage is. When the host
+    cannot be mapped to a single disk -- a span across mixed media, a network
+    source -- there is no honest answer, so the env is omitted and the base
+    image's own default applies.
+    """
+    if cfg.pod.ssd is None:
+        from winpodx.utils.paths import data_dir
+
+        target = Path(cfg.pod.storage_path).expanduser() if cfg.pod.storage_path else data_dir()
+        detected = host_storage_is_ssd(target)
+        if detected is None:
+            return None
+        return _DISK_ROTATION_SSD if detected else _DISK_ROTATION_HDD
+    return _DISK_ROTATION_SSD if cfg.pod.ssd else _DISK_ROTATION_HDD
 
 
 def _host_dmi_field(name: str) -> str | None:
@@ -935,6 +969,7 @@ def _build_compose_content(cfg: Config) -> str:
         container_name=_yaml_escape(cfg.pod.container_name),
         image=_yaml_escape(image),
         disk_size=_yaml_escape(_disguise_disk_size(cfg)),
+        disk_rotation_env=_disk_rotation_env(cfg),
         disk_type=disk_type,
         adapter=adapter,
         mtu=mtu,
@@ -942,6 +977,8 @@ def _build_compose_content(cfg: Config) -> str:
         network_env=network_env,
         vga=vga,
         hv=hv,
+        rng=_rng_env(cfg),
+        vm=_vm_env(cfg),
         user=_yaml_escape(cfg.rdp.user),
         password=_yaml_escape(password),
         home=str(Path.home()),

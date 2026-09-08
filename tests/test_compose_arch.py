@@ -4,7 +4,8 @@
 After the #287 refactor, CPU sub-flags live in the dedicated
 ``CPU_FLAGS:`` env (consumed by dockur's ``proc.sh``) rather than being
 injected through ``ARGUMENTS:``. ``ARGUMENTS:`` now carries only the
-non-``-cpu`` extras (virtio-rng device pair). dockur owns the hv-*
+non-``-cpu`` extras (device passthrough, disguise tables). dockur owns
+the RNG device (#853) and the hv-*
 enlightenments via its ``HV=Y`` default and the nested-virt sub-flags
 via the ``VMX=Y`` env.
 
@@ -140,22 +141,122 @@ def test_compose_cpu_flags_x86_64(monkeypatch):
     assert 'CPU_FLAGS: "arch_capabilities=off"' in content
 
 
-def test_compose_ssd_emulation_off_by_default(monkeypatch):
-    monkeypatch.setattr(_compose_module.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(_config_module.platform, "machine", lambda: "x86_64")
-    content = _build_compose_content(_cfg())
-    assert "rotation_rate" not in content
+@pytest.mark.parametrize("arch", ["x86_64", "aarch64"])
+def test_compose_normal_mode_leaves_the_rng_device_to_the_base_image(monkeypatch, arch):
+    """#853: exactly one virtio-rng, and it is the base image's.
+
+    qemus/qemu's src/config.sh already emits ``rng-random`` +
+    ``virtio-rng-pci`` unless ``RNG`` is disabled, so appending our own gave
+    the guest two RNG devices.
+    """
+    monkeypatch.setattr(_compose_module.platform, "machine", lambda: arch)
+    monkeypatch.setattr(_config_module.platform, "machine", lambda: arch)
+    cfg = _cfg()
+    cfg.pod.tuning_profile = "safe"  # the profile that used to add our own RNG
+
+    content = _build_compose_content(cfg)
+
+    assert "virtio-rng" not in content, "the base image owns the RNG device"
+    assert "rng-random" not in content
+    assert 'RNG: "N"' not in content, "normal mode keeps the base image default"
 
 
-def test_compose_ssd_emulation_injects_rotation_rate(monkeypatch):
-    # #606: pod.ssd -> -global <driver>.rotation_rate=1 so Windows sees an SSD.
+@pytest.mark.parametrize("arch", ["x86_64", "aarch64"])
+def test_compose_max_disguise_turns_the_base_rng_off(monkeypatch, arch):
+    """#853: max disguise has to remove the base image's RNG, not just ours.
+
+    The virtio RNG is a VEN_1AF4 PCI device, which is exactly the ID max
+    disguise exists to hide. Skipping our own copy left the base image's in
+    place, so the mode never actually removed it. ``RNG=N`` is the supported
+    control; ``VM=N`` drops the ``+hypervisor`` CPU bit the base image adds by
+    default.
+    """
+    monkeypatch.setattr(_compose_module.platform, "machine", lambda: arch)
+    monkeypatch.setattr(_config_module.platform, "machine", lambda: arch)
+    cfg = _cfg()
+    cfg.pod.disguise_hypervisor = True
+    cfg.pod.disguise_level = "max"
+
+    content = _build_compose_content(cfg)
+
+    assert 'RNG: "N"' in content
+    assert 'VM: "N"' in content
+    assert "virtio-rng" not in content, "no replacement RNG device"
+    assert "rng-random" not in content
+
+
+def test_compose_disk_rotation_follows_the_host_when_unset(monkeypatch):
+    """#855: an unset ``pod.ssd`` tracks the host's own storage.
+
+    Detection returns None on layouts it cannot map to one disk, and the old
+    default then silently declared a spinning disk. Auto means auto: ask the
+    host, and only fall back to the base image's own default when the host
+    cannot answer.
+    """
     monkeypatch.setattr(_compose_module.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(_config_module.platform, "machine", lambda: "x86_64")
     cfg = _cfg()
+    cfg.pod.ssd = None
+
+    monkeypatch.setattr(_compose_module, "host_storage_is_ssd", lambda _p: True)
+    assert 'DISK_ROTATION: "1"' in _build_compose_content(cfg)
+
+    monkeypatch.setattr(_compose_module, "host_storage_is_ssd", lambda _p: False)
+    assert 'DISK_ROTATION: "7200"' in _build_compose_content(cfg)
+
+    # Undecidable host: leave the env off and let the base image decide.
+    monkeypatch.setattr(_compose_module, "host_storage_is_ssd", lambda _p: None)
+    assert "DISK_ROTATION" not in _build_compose_content(cfg)
+
+
+def test_compose_explicit_ssd_setting_overrides_host_detection(monkeypatch):
+    monkeypatch.setattr(_compose_module.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(_config_module.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(_compose_module, "host_storage_is_ssd", lambda _p: True)
+    cfg = _cfg()
+
+    cfg.pod.ssd = False
+    assert 'DISK_ROTATION: "7200"' in _build_compose_content(cfg)
+
     cfg.pod.ssd = True
+    assert 'DISK_ROTATION: "1"' in _build_compose_content(cfg)
+
+
+@pytest.mark.parametrize("arch", ["x86_64", "aarch64"])
+def test_compose_hdd_mode_declares_a_rotational_disk(monkeypatch, arch):
+    """#855: ``pod.ssd = False`` must produce a *rotational* guest disk.
+
+    dockur owns the rotation contract: ``DISK_ROTATION`` defaults to ``1``
+    (qemus/qemu ``src/disk.sh``) and is applied per device as
+    ``rotation_rate=$DISK_ROTATION`` on both ``ide-hd`` and ``scsi-hd``.
+    Emitting nothing therefore leaves the guest seeing an SSD even though
+    the user asked for a spinning disk, and our old ``-global`` overrides
+    could not correct it: an explicit per-device property beats ``-global``.
+    """
+    monkeypatch.setattr(_compose_module.platform, "machine", lambda: arch)
+    monkeypatch.setattr(_config_module.platform, "machine", lambda: arch)
+    cfg = _cfg()
+    cfg.pod.ssd = False
+
     content = _build_compose_content(cfg)
-    assert "ide-hd.rotation_rate=1" in content
-    assert "scsi-hd.rotation_rate=1" in content
+
+    assert 'DISK_ROTATION: "7200"' in content
+    assert "rotation_rate" not in content, "raw -global overrides must not fight DISK_ROTATION"
+
+
+@pytest.mark.parametrize("arch", ["x86_64", "aarch64"])
+def test_compose_ssd_mode_declares_a_non_rotational_disk(monkeypatch, arch):
+    # #606 / #855: pod.ssd -> DISK_ROTATION=1 so Windows enables TRIM and
+    # skips scheduled defrag.
+    monkeypatch.setattr(_compose_module.platform, "machine", lambda: arch)
+    monkeypatch.setattr(_config_module.platform, "machine", lambda: arch)
+    cfg = _cfg()
+    cfg.pod.ssd = True
+
+    content = _build_compose_content(cfg)
+
+    assert 'DISK_ROTATION: "1"' in content
+    assert "rotation_rate" not in content
 
 
 def test_compose_cpu_flags_aarch64(monkeypatch):
@@ -500,9 +601,12 @@ def test_compose_cpu_flags_invtsc_auto_profile_appends_when_supported(monkeypatc
     content = _build_compose_content(cfg)
     # +invtsc lands in CPU_FLAGS env now, not ARGUMENTS.
     assert 'CPU_FLAGS: "arch_capabilities=off,+invtsc"' in content
-    # virtio-rng -device pair stays in ARGUMENTS (dockur doesn't add it).
-    assert "virtio-rng-pci,rng=rng0" in content
-    assert "rng-random,id=rng0,filename=/dev/urandom" in content
+    # The RNG device is no longer ours to add: qemus/qemu's config.sh emits one
+    # unconditionally, so a tuning profile that "applies virtio-rng" now just
+    # means "leave the base image's device alone" (#853).
+    assert "virtio-rng" not in content
+    assert "rng-random" not in content
+    assert 'RNG: "Y"' in content
     # We no longer emit hv-* explicitly -- dockur owns those via HV=Y.
     assert "hv-relaxed" not in content
     assert "hv-evmcs" not in content
