@@ -3,7 +3,7 @@
   "repository": "tarkky/winpodx",
   "repositoryId": "1276433680",
   "repositoryCreatedAt": "2026-06-22",
-  "updatedAt": "2026-09-08T08:10:03.292Z",
+  "updatedAt": "2026-09-09T08:13:28.980Z",
   "observedFrom": "2026-09-03",
   "backfill": {
     "generatedAt": "2026-09-03T08:07:52.291Z",
@@ -38,6 +38,11 @@
     },
     {
       "date": "2026-09-08",
+      "count": 0,
+      "source": "observed"
+    },
+    {
+      "date": "2026-09-09",
       "count": 0,
       "source": "observed"
     }
