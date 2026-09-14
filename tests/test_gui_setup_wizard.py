@@ -191,7 +191,13 @@ def test_install_calls_handle_setup_once_with_collected_values(
     _ensure_qapp()
     _patch_detect(monkeypatch, _ok_state)
     seen: list = []
-    monkeypatch.setattr("winpodx.cli.setup_cmd.handle_setup", lambda args: seen.append(args))
+    progress_callbacks: list = []
+
+    def fake_handle_setup(args, *, on_progress=None) -> None:
+        seen.append(args)
+        progress_callbacks.append(on_progress)
+
+    monkeypatch.setattr("winpodx.cli.setup_cmd.handle_setup", fake_handle_setup)
     from winpodx.gui._setup_wizard import SetupWizardDialog
 
     dlg = SetupWizardDialog(None, mode="first-run")
@@ -206,6 +212,8 @@ def test_install_calls_handle_setup_once_with_collected_values(
     dlg.next_btn.click()
     _wait_until(lambda: dlg.pages.currentIndex() == 5)
     assert len(seen) == 1
+    assert len(progress_callbacks) == 1
+    assert callable(progress_callbacks[0])
     args = seen[0]
     assert args.non_interactive is True
     assert args.customize is False

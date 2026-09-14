@@ -257,6 +257,10 @@ class BringUpProgressDialog(QDialog):
         # standard 5; a recreate / hardened-build run prepends those pre-phases
         # so they appear as their own checklist rows.
         self._phase_defs: tuple[tuple[str, str, str, bool], ...] = tuple(phases or _PHASE_DEFS)
+        # Run-specific slug -> label: a run may reuse a global slug under a
+        # different label, so the header resolves from THIS run, not the
+        # global _ALL_PHASE_DEFS default.
+        self._run_labels: dict[str, str] = {pid: label for pid, label, _e, _c in self._phase_defs}
 
         # State for the checklist + elapsed math. ``_phase_started_at``
         # is monotonic-seconds keyed by phase index; ``_phase_done_at``
@@ -457,7 +461,7 @@ class BringUpProgressDialog(QDialog):
         checklist routing but still surfaced in the header).
         """
         idx = self._row_index(phase_id)
-        label = _phase_label(phase_id)
+        label = self._run_labels.get(phase_id) or _phase_label(phase_id)
 
         # Header: "Phase N / 5 . Label"
         if idx >= 0:
@@ -609,7 +613,8 @@ class BringUpProgressDialog(QDialog):
         self.pod_log_view.setVisible(checked)
         if checked:
             self.pod_log_toggle.setArrowType(Qt.ArrowType.DownArrow)
-            self._start_pod_tail()
+            if self._cfg is not None:
+                self._start_pod_tail()
         else:
             self.pod_log_toggle.setArrowType(Qt.ArrowType.RightArrow)
             self._stop_pod_tail()

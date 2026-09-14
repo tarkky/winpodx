@@ -19,11 +19,17 @@ class SetupWorker(QObject):
     """Run ``handle_setup`` or wipe+reinstall off the GUI thread."""
 
     finished = Signal(bool, str)
+    progress = Signal(str, str)
 
     def __init__(self, args: argparse.Namespace, *, reinstall: bool) -> None:
         super().__init__()
         self._args = args
         self._reinstall = reinstall
+
+    def _on_progress(self, stage: str, detail: str) -> None:
+        # Runs on the worker thread: emitting the signal is the only
+        # cross-thread-safe action; never touch a QWidget from here (#SIGSEGV).
+        self.progress.emit(stage, detail)
 
     def run(self) -> None:
         """Blocking install. Emits ``finished(success, error)`` on the worker thread."""
@@ -33,7 +39,7 @@ class SetupWorker(QObject):
             else:
                 from winpodx.cli.setup_cmd import handle_setup
 
-                handle_setup(self._args)
+                handle_setup(self._args, on_progress=self._on_progress)
         except SystemExit as exc:
             code = exc.code
             if code in (0, None):

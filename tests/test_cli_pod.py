@@ -783,6 +783,89 @@ def test_wait_ready_streams_clean_logs_and_completes_all_phases(
     assert created[0].terminated
 
 
+def test_wait_ready_forwards_live_lines_to_on_log_without_changing_stdout(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Given: the same fully-mocked fresh-boot wait-ready surface as
+    # test_wait_ready_streams_clean_logs_and_completes_all_phases, plus an
+    # on_log collector to prove the best-effort forwarding of live output.
+    cfg.pod.storage_path = "/isolated/storage"
+    cfg.pod.vnc_port = 8007
+    cfg.pod.initialized = True
+    forwarded: list[str] = []
+
+    class _UnavailableReader:
+        def __init__(self, vnc_port: int) -> None:
+            assert vnc_port == 8007
+
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr("winpodx.cli.setup_cmd._container_exists_on_backend", lambda config: True)
+    monkeypatch.setattr("winpodx.core.pod.pod_status", lambda config: PodStatus(PodState.RUNNING))
+    monkeypatch.setattr("winpodx.core.pod.check_rdp_port", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        "winpodx.core.provisioner.wait_for_windows_responsive", lambda config, timeout: True
+    )
+    monkeypatch.setattr(pod, "_wait_for_oem_reboot", lambda config, timeout: False)
+    monkeypatch.setattr("winpodx.core.guest_sync.maybe_autosync", lambda config: False)
+    monkeypatch.setattr(subprocess, "Popen", _LogProcess)
+    monkeypatch.setattr(pod.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr("winpodx.core.dockur_progress.DockurProgressReader", _UnavailableReader)
+
+    # When: a live-line callback is supplied.
+    pod._wait_ready(60, show_logs=True, verbose=False, on_log=forwarded.append)
+
+    # Then: stdout keeps the exact permanent lines it always produced.
+    out = capsys.readouterr().out
+    assert "OK Container running" in out
+    assert "OK RDP port 3390 open" in out
+    assert "OK Windows ready" in out
+
+    # Then: on_log received the checkpoint lines and at least one container
+    # milestone/progress line, mirroring what streamed to the console.
+    joined = "\n".join(forwarded)
+    assert "OK Container running" in joined
+    assert "OK RDP port 3390 open" in joined
+    assert "OK Windows ready" in joined
+    assert any("Extracting Windows image" in line for line in forwarded)
+
+
+def test_wait_ready_forwards_http_progress_to_on_log(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Given: HTTP progress polling is the active progress source.
+    cfg.pod.vnc_port = 18006
+    progress_seen = threading.Event()
+    forwarded: list[str] = []
+
+    class _Reader:
+        def __init__(self, vnc_port: int) -> None:
+            return None
+
+        def poll(self) -> DockurProgress:
+            progress_seen.set()
+            return DockurProgress(text="HTTP progress primary", is_loading=False)
+
+    monkeypatch.setattr("winpodx.cli.setup_cmd._container_exists_on_backend", lambda config: True)
+    monkeypatch.setattr("winpodx.core.pod.pod_status", lambda config: PodStatus(PodState.RUNNING))
+    monkeypatch.setattr("winpodx.core.pod.check_rdp_port", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        "winpodx.core.provisioner.wait_for_windows_responsive",
+        lambda config, timeout: progress_seen.wait(1.0),
+    )
+    monkeypatch.setattr(pod, "_wait_for_oem_reboot", lambda config, timeout: True)
+    monkeypatch.setattr("winpodx.core.dockur_progress.DockurProgressReader", _Reader)
+    monkeypatch.setattr(subprocess, "Popen", _LogProcess)
+
+    # When
+    pod._wait_ready(60, show_logs=True, verbose=False, on_log=forwarded.append)
+
+    # Then: the HTTP progress text reached both stdout and on_log.
+    assert "HTTP progress primary" in capsys.readouterr().out
+    assert any("HTTP progress primary" in line for line in forwarded)
+
+
 def test_wait_ready_prefers_msg_html_progress_on_configured_port(
     cfg: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

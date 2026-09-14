@@ -309,6 +309,33 @@ def test_full_provision_forwards_options_and_reports_warnings(capsys) -> None:
     assert "app discovery did not find any applications" in output
 
 
+def test_full_provision_wait_fn_streams_live_lines_as_wait_ready_progress(capsys) -> None:
+    # Given: a captured finish_provisioning call and a fake _wait_ready that
+    # emits a live line through the on_log callback it is handed.
+    cfg = Config()
+    cfg.pod.backend = "podman"
+    finish = MagicMock(return_value={})
+    progress: list[tuple[str, str]] = []
+
+    def fake_wait_ready(timeout: int, show_logs: bool, verbose: bool = False, on_log=None) -> None:
+        assert on_log is not None
+        on_log("      OK Container running")
+
+    with (
+        patch("winpodx.core.provisioner.finish_provisioning", finish),
+        patch("winpodx.cli.pod._wait_ready", fake_wait_ready),
+    ):
+        setup_cmd._run_full_provision(cfg, on_progress=lambda s, d: progress.append((s, d)))
+
+        # When: the injected wait_fn runs the wait-ready phase.
+        wait_fn = finish.call_args.kwargs["wait_fn"]
+        assert wait_fn(cfg, 3600) is True
+
+    # Then: the live line was forwarded to the outer progress collector under
+    # the wait_ready stage.
+    assert ("wait_ready", "      OK Container running") in progress
+
+
 def test_rotate_password_success_writes_config_and_compose(tmp_path: Path, capsys) -> None:
     cfg = Config()
     cfg.pod.backend = "podman"

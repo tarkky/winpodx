@@ -123,6 +123,34 @@ class ReviewPage(QWidget):
         )
 
 
+# One row per user-meaningful milestone; (phase_id, label, eta_hint, cancellable).
+# finish_provisioning streams finer stages than these — each folds into one row,
+# and reaching a later stage proves the earlier folded ones finished (honest cascade).
+_INSTALL_CHECKLIST: tuple[tuple[str, str, str, bool], ...] = (
+    ("wiz_windows", "Download & install Windows", "usually 5-10 min; longer on a slow link", False),
+    ("wiz_agent", "Start the guest agent", "usually ~1-2 min", False),
+    ("wiz_configure", "Apply Windows fixes", "usually ~1-2 min", False),
+    ("wiz_apps", "Discover & register apps", "usually ~1-2 min", False),
+    ("wiz_complete", "Finish integration", "", False),
+)
+
+# Every finish_provisioning stage slug maps to exactly one row -> deterministic
+# advance. reverse_open lands on the final row (even when "skipped") so on_done
+# can finalize it.
+_STAGE_TO_ROW: dict[str, str] = {
+    "wait_ready": "wiz_windows",
+    "agent_settle": "wiz_agent",
+    "apply_fixes": "wiz_configure",
+    "discovery": "wiz_apps",
+    "reverse_open": "wiz_complete",
+}
+
+# Smallest live log the embedded page keeps before the wizard has to scroll.
+_LOG_MIN_LINES = 4
+# Qt's QWIDGETSIZE_MAX (not exported by PySide6): lifts a setFixedHeight cap.
+_QWIDGETSIZE_MAX = (1 << 24) - 1
+
+
 class InstallPage(QWidget):
     """Embed BringUpProgressDialog — no second progress implementation."""
 
@@ -151,21 +179,45 @@ class InstallPage(QWidget):
             self,
             on_cancel=self._on_cancel,
             cfg=self._cfg,
-            phases=(
-                (
-                    "phase_1_pod",
-                    "Install Windows",
-                    "usually 5-10 min; longer on a slow connection",
-                    False,
-                ),
-            ),
+            phases=_INSTALL_CHECKLIST,
         )
         progress.setWindowFlags(Qt.WindowType.Widget)
         progress.setWindowModality(Qt.WindowModality.NonModal)
         progress.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._root.addWidget(progress)
         self.progress = progress
-        self.progress.on_phase("phase_1_pod", tr("Downloading and installing Windows..."))
+        # First run has cfg=None so the podman tail can't start, but the log
+        # panel must stay visible to carry the streamed stage details below.
+        progress.pod_log_toggle.setChecked(True)
+        progress.pod_log_view.setVisible(True)
+        # Standalone, the dialog's fixed 210 px log is what sizes the dialog.
+        # Embedded, the page is sized by the wizard's scroll viewport, so the
+        # log keeps a readable floor and absorbs every spare pixel below the
+        # checklist instead of the rows stretching apart. Vertical policy is
+        # Ignored, not Expanding: the scroll area sizes the page to its
+        # *preferred* height, and QPlainTextEdit's stock 192 px sizeHint would
+        # push that past the viewport; the stretch factor routes spare space
+        # to the log alone.
+        log = progress.pod_log_view
+        inset = 2 * (log.frameWidth() + int(log.document().documentMargin()))
+        log.setMinimumHeight(_LOG_MIN_LINES * log.fontMetrics().lineSpacing() + inset)
+        log.setMaximumHeight(_QWIDGETSIZE_MAX)
+        policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+        policy.setVerticalStretch(1)
+        log.setSizePolicy(policy)
+        self.progress.on_phase(
+            _INSTALL_CHECKLIST[0][0], tr("Downloading and installing Windows...")
+        )
+
+    def on_setup_progress(self, stage: str, detail: str) -> None:
+        # GUI-thread slot (Qt queues the worker's progress signal): appends the
+        # detail to the visible log and advances the checklist by the stage map.
+        if self.progress is None:
+            return
+        row = _STAGE_TO_ROW.get(stage)
+        self.progress.append_pod_log_line(f"[{stage}] {detail}" if detail else f"[{stage}]")
+        if row is not None:
+            self.progress.on_phase(row, detail)
 
     def finish(self, success: bool, error: str) -> None:
         """Tick or freeze the checklist from the worker result."""

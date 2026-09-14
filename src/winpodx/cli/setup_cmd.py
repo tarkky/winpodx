@@ -7,6 +7,7 @@ import argparse
 import os
 import shutil
 from pathlib import Path
+from typing import Callable
 
 from winpodx.cli.disguise import build_disguise_image, disguise_image_is_stale
 from winpodx.core.compose import (
@@ -730,7 +731,10 @@ def _prompt_edition_locale_tuning(cfg: Config) -> None:
     cfg.pod.__post_init__()
 
 
-def _run_full_provision(cfg: Config) -> None:
+def _run_full_provision(
+    cfg: Config,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> None:
     """Drive the post-container-create provisioning so a standalone
     `winpodx setup` finishes like a complete install instead of stopping at
     "container created".
@@ -745,6 +749,12 @@ def _run_full_provision(cfg: Config) -> None:
     with five retries for non-timeout transient failures, reverse-open gated
     on cfg.reverse_open.enabled.
 
+    ``on_progress(stage, detail)`` is forwarded directly to
+    ``finish_provisioning`` so GUI callers (e.g. ``SetupWorker``) receive
+    stage/detail updates without re-implementing the chain.  CLI callers
+    that pass ``None`` (the default) get the same console ``print`` output
+    they always did.
+
     Skipped for non-podman/docker backends (the helper short-circuits too).
     """
     if cfg.pod.backend not in ("podman", "docker"):
@@ -758,8 +768,13 @@ def _run_full_provision(cfg: Config) -> None:
 
     from winpodx.core.provisioner import finish_provisioning
 
-    def _on_progress(stage: str, detail: str) -> None:
+    def _on_progress_cli(stage: str, detail: str) -> None:
         print(tr("  [{stage}] {detail}").format(stage=stage, detail=detail))
+        if on_progress is not None:
+            try:
+                on_progress(stage, detail)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _rich_wait(_cfg: Config, timeout: int) -> bool:
         # Interactive `winpodx setup` shows the same live download/boot
@@ -768,8 +783,19 @@ def _run_full_provision(cfg: Config) -> None:
         # Injected so core/provisioner stays cli-free.
         from winpodx.cli.pod import _wait_ready
 
+        # GUI-only forwarding: route each live log line to the outer
+        # on_progress callback under the "wait_ready" stage.  We must NOT
+        # route through _on_progress_cli because that prints and would
+        # duplicate stdout.  Swallow callback exceptions (best-effort).
+        def _fwd(line: str) -> None:
+            if on_progress is not None:
+                try:
+                    on_progress("wait_ready", line)
+                except Exception:  # noqa: BLE001
+                    pass
+
         try:
-            _wait_ready(timeout, show_logs=True, verbose=False)
+            _wait_ready(timeout, show_logs=True, verbose=False, on_log=_fwd)
             return True
         except SystemExit as exc:
             return exc.code in (0, None)
@@ -781,7 +807,7 @@ def _run_full_provision(cfg: Config) -> None:
         with_reverse_open=getattr(cfg.reverse_open, "enabled", False),
         with_discovery=True,
         retries=5,
-        on_progress=_on_progress,
+        on_progress=_on_progress_cli,
         wait_fn=_rich_wait,
     )
 
@@ -850,8 +876,20 @@ def apply_setup_presets(cfg: Config, args: argparse.Namespace) -> list[str]:
     return applied
 
 
-def handle_setup(args: argparse.Namespace) -> None:
-    """Run the setup wizard."""
+def handle_setup(
+    args: argparse.Namespace,
+    *,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> None:
+    """Run the setup wizard.
+
+    ``on_progress(stage, detail)`` is an optional keyword-only callback for
+    GUI callers (e.g. ``SetupWorker``).  It receives the same stage/detail
+    pairs that ``finish_provisioning`` emits: ``backend``, ``wait_ready``,
+    ``agent_settle``, ``apply_fixes``, ``discovery``, and ``reverse_open``.
+    CLI callers omit it and receive the same ``print()`` output as before —
+    backward compatibility is preserved.
+    """
     import sys
 
     if getattr(args, "update_image", False):
@@ -1284,7 +1322,7 @@ def handle_setup(args: argparse.Namespace) -> None:
                 )
             )
     else:
-        _run_full_provision(cfg)
+        _run_full_provision(cfg, on_progress=on_progress)
         print(tr("\nSetup + provisioning complete. Launch with `winpodx app run desktop`."))
 
 

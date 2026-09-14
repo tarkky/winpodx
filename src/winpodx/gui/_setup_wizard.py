@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread
+from PySide6.QtCore import QSize, Qt, QThread
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from winpodx.core.config import Config
 from winpodx.core.i18n import tr
 from winpodx.gui import theme
+from winpodx.gui._frameless import FramelessMixin
 from winpodx.gui._main_window_secondary_style import apply_w11_button
 from winpodx.gui._setup_wizard_config import ConfigurationPage
 from winpodx.gui._setup_wizard_model import collect_answers, to_namespace
@@ -31,6 +32,7 @@ from winpodx.gui._setup_wizard_pages import (
 )
 from winpodx.gui._setup_wizard_prereq import PrerequisitesPage
 from winpodx.gui._setup_wizard_worker import SetupWorker
+from winpodx.gui._title_bar import TitleBar
 from winpodx.gui.theme_manager import instance as theme_manager_instance
 
 _STEPS = (
@@ -42,9 +44,46 @@ _STEPS = (
     "Finish",
 )
 
+# Default (and minimum) wizard size. 640 tall leaves the scroll viewport
+# 640 - TITLE_BAR_H 32 - pane margins 24 + 16 = 568 px, which holds the Install
+# page at the default desktop font: five 32 px checklist rows, header, bar, log
+# toggle and footer (428 px with gaps) plus a six-line live log (140 px).
+_WIZARD_SIZE = QSize(840, 640)
 
-class SetupWizardDialog(QDialog):
-    """First-run / reinstall wizard. Collects answers, then calls handle_setup."""
+
+class _CurrentPageStack(QStackedWidget):
+    """Stack whose size hints follow the *current* page only.
+
+    ``QStackedLayout`` reports the tallest of *all* pages, so inside the
+    resizable scroll area the Configuration form (~770 px) would force
+    every other page, Install included, to scroll by the same amount.
+    """
+
+    def sizeHint(self) -> QSize:  # noqa: N802 — Qt override
+        page = self.currentWidget()
+        return super().sizeHint() if page is None else page.sizeHint()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 — Qt override
+        page = self.currentWidget()
+        return super().minimumSizeHint() if page is None else page.minimumSizeHint()
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 — Qt override
+        page = self.currentWidget()
+        if page is None:
+            return super().heightForWidth(width)
+        floor = page.minimumSizeHint().height()
+        if page.hasHeightForWidth():
+            return max(floor, page.heightForWidth(width))
+        return floor
+
+
+class SetupWizardDialog(FramelessMixin, QDialog):
+    """First-run / reinstall wizard. Collects answers, then calls handle_setup.
+
+    Shares the main window's chrome policy: frameless with the custom
+    ``TitleBar`` by default, native WM decorations under
+    ``WINPODX_NATIVE_TITLEBAR=1`` (``FramelessMixin``).
+    """
 
     def __init__(
         self,
@@ -63,7 +102,7 @@ class SetupWizardDialog(QDialog):
         self._worker: SetupWorker | None = None
         self._answers = collect_answers(cfg if self._reinstall else None)
         self.setWindowTitle(tr("Reinstall Windows") if self._reinstall else tr("Set up WinPodX"))
-        self.setMinimumSize(840, 560)
+        self.setMinimumSize(_WIZARD_SIZE)
         self.setModal(True)
         self._rail_labels: list[QLabel] = []
         self._build()
@@ -72,7 +111,17 @@ class SetupWizardDialog(QDialog):
         self._sync_nav()
 
     def _build(self) -> None:
-        root = QHBoxLayout(self)
+        self._install_frameless()
+        chrome = QVBoxLayout(self)
+        chrome.setContentsMargins(0, 0, 0, 0)
+        chrome.setSpacing(0)
+        self.title_bar = TitleBar(self)
+        self.title_bar.setVisible(self._frameless_active)
+        chrome.addWidget(self.title_bar)
+        body = QWidget()
+        body.setMouseTracking(True)
+        chrome.addWidget(body, 1)
+        root = QHBoxLayout(body)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         self._rail = QFrame()
@@ -88,10 +137,11 @@ class SetupWizardDialog(QDialog):
             rail_lay.addWidget(lbl)
         rail_lay.addStretch(1)
         pane = QWidget()
+        pane.setMouseTracking(True)
         pane_lay = QVBoxLayout(pane)
         pane_lay.setContentsMargins(theme.SPACE_XL, theme.SPACE_XL, theme.SPACE_XL, theme.SPACE_L)
         pane_lay.setSpacing(theme.SPACE_L)
-        self.pages = QStackedWidget()
+        self.pages = _CurrentPageStack()
         self.welcome = WelcomePage(reinstall=self._reinstall)
         self.prereq = PrerequisitesPage()
         self.config = ConfigurationPage(self._answers)
@@ -186,6 +236,7 @@ class SetupWizardDialog(QDialog):
         worker = SetupWorker(to_namespace(self._answers), reinstall=self._reinstall)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
+        worker.progress.connect(self.install.on_setup_progress)
         worker.finished.connect(self._on_setup_finished)
         worker.finished.connect(thread.quit)
         thread.finished.connect(self._cleanup_worker)
@@ -238,6 +289,7 @@ class SetupWizardDialog(QDialog):
 
     def _restyle(self) -> None:
         self.setStyleSheet(theme.DIALOG)
+        self.title_bar.restyle()
         self._scroll.setStyleSheet(theme.SCROLL_AREA)
         self._rail.setStyleSheet(
             f"QFrame#wizardRail {{ background: {theme.C.MANTLE}; border: none; "

@@ -7,6 +7,7 @@ import argparse
 import re
 import sys
 import threading
+from collections.abc import Callable
 
 from winpodx.cli.main import _emit_deprecation as _deprecate_pod
 from winpodx.core.i18n import tr
@@ -1351,7 +1352,12 @@ def _iter_container_lines(stream, dl_state: dict, stop: threading.Event):  # typ
         yield tail
 
 
-def _wait_ready(timeout: int, show_logs: bool, verbose: bool = False) -> None:
+def _wait_ready(
+    timeout: int,
+    show_logs: bool,
+    verbose: bool = False,
+    on_log: Callable[[str], None] | None = None,
+) -> None:
     """v0.2.0.5: multi-phase wait for the Windows VM to finish first-boot.
 
     Polls four checkpoints with elapsed-time stamps so the user sees
@@ -1488,10 +1494,20 @@ def _wait_ready(timeout: int, show_logs: bool, verbose: bool = False) -> None:
     # download progress + boot heartbeat; permanent lines go through say().
     _live = _LiveLine(enabled=show_logs and not verbose)
 
+    def _emit_log(text: str) -> None:
+        """Best-effort forward to the on_log callback; swallow all exceptions."""
+        if on_log is None:
+            return
+        try:
+            on_log(text)
+        except Exception:  # noqa: BLE001
+            pass
+
     def say(text: str) -> None:
         """Print a permanent line, erasing the transient live line first."""
         _live.clear()
         print(text)
+        _emit_log(text)
 
     # On an ESTABLISHED pod (upgrade / re-run) the container has been up for a
     # while, so `--tail 100` would replay the ORIGINAL first-boot ISO-download +
@@ -1532,6 +1548,7 @@ def _wait_ready(timeout: int, show_logs: bool, verbose: bool = False) -> None:
                 _live.set(f"  {progress.text}")
             else:
                 print(f"  {progress.text}")
+            _emit_log(progress.text)
             last_http_text = progress.text
 
         def _poll_http_progress_until_done() -> None:
@@ -1709,7 +1726,9 @@ def _wait_ready(timeout: int, show_logs: bool, verbose: bool = False) -> None:
                     # A real dockur line (e.g. "> Extracting Windows image"):
                     # erase the transient line, print it permanently.
                     _live.clear()
-                    print(f"       [container] {_rewrite_vnc_url(line)}")
+                    _printed = f"       [container] {_rewrite_vnc_url(line)}"
+                    print(_printed)
+                    _emit_log(_printed)
 
             threading.Thread(target=_drain, args=(log_proc.stdout,), daemon=True).start()
             threading.Thread(target=_drain, args=(log_proc.stderr,), daemon=True).start()
