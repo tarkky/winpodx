@@ -19,8 +19,14 @@ PySide6 = pytest.importorskip("PySide6")
 from winpodx.core.debloat import load_catalog  # noqa: E402
 from winpodx.core.i18n import tr  # noqa: E402
 from winpodx.gui import theme  # noqa: E402
+from winpodx.gui._dialog_chrome import ChromeDialog  # noqa: E402
+from winpodx.gui._title_bar import TitleBar  # noqa: E402
 from winpodx.gui.debloat_picker import _PRESET_DESCRIPTIONS, DebloatPickerDialog  # noqa: E402
 from winpodx.gui.theme import C  # noqa: E402
+
+# The picker's body opened at 760x720 before it gained the shared chrome; the
+# frameless bar is added on top of that, never carved out of it.
+_BODY_W, _BODY_H = 760, 720
 
 
 def _ensure_qapp():
@@ -37,9 +43,123 @@ def qapp():
     return _ensure_qapp()
 
 
+@pytest.fixture(autouse=True)
+def _clear_native_titlebar_env(monkeypatch):
+    monkeypatch.delenv("WINPODX_NATIVE_TITLEBAR", raising=False)
+
+
 @pytest.fixture
 def catalog():
     return load_catalog()
+
+
+class TestDialogChrome:
+    def test_is_a_chrome_dialog_with_its_own_close_only_caption(self, qapp, catalog):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QPushButton
+
+        dlg = DebloatPickerDialog(catalog)
+        try:
+            assert isinstance(dlg, ChromeDialog)
+            assert dlg._frameless_active is True
+            assert dlg.windowFlags() & Qt.WindowType.FramelessWindowHint
+            assert dlg.windowTitle() == tr("Debloat picker")
+            bar = dlg.title_bar
+            assert isinstance(bar, TitleBar)
+            assert bar.title_label.text() == tr("Debloat picker")
+            assert [b.objectName() for b in bar.findChildren(QPushButton)] == ["captionClose"]
+            assert bar.btn_minimize is None and bar.btn_maximize is None
+            assert dlg.chrome_height == theme.TITLE_BAR_H
+        finally:
+            dlg.deleteLater()
+
+    def test_body_is_mounted_on_content_widget_under_the_bar(self, qapp, catalog):
+        dlg = DebloatPickerDialog(catalog)
+        try:
+            outer = dlg.layout()
+            assert outer.count() == 2
+            assert outer.itemAt(0).widget() is dlg.title_bar
+            assert outer.itemAt(1).widget() is dlg.content_widget
+            body = dlg.content_widget.layout()
+            assert body is not None
+            assert body.indexOf(dlg._count_label) >= 0
+            assert dlg._preset_desc.parentWidget() is dlg.content_widget
+        finally:
+            dlg.deleteLater()
+
+    def test_frameless_keeps_the_prior_body_room_below_the_bar(self, qapp, catalog):
+        dlg = DebloatPickerDialog(catalog)
+        try:
+            assert dlg.minimumWidth() == 560
+            assert dlg.width() == _BODY_W
+            assert dlg.height() == _BODY_H + theme.TITLE_BAR_H
+            dlg.show()
+            qapp.processEvents()
+            assert dlg.title_bar.geometry().top() == 0
+            assert dlg.content_widget.geometry().top() == theme.TITLE_BAR_H
+            assert dlg.content_widget.height() == _BODY_H
+        finally:
+            dlg.close()
+            dlg.deleteLater()
+
+    def test_native_titlebar_opt_out_keeps_native_dimensions(self, qapp, catalog, monkeypatch):
+        from PySide6.QtCore import Qt
+
+        monkeypatch.setenv("WINPODX_NATIVE_TITLEBAR", "1")
+        dlg = DebloatPickerDialog(catalog)
+        try:
+            assert dlg._frameless_active is False
+            assert not (dlg.windowFlags() & Qt.WindowType.FramelessWindowHint)
+            assert dlg.title_bar is not None and dlg.title_bar.isHidden()
+            assert dlg.chrome_height == 0
+            assert dlg.windowTitle() == tr("Debloat picker")
+            assert (dlg.width(), dlg.height()) == (_BODY_W, _BODY_H)
+            dlg.show()
+            qapp.processEvents()
+            assert dlg.content_widget.geometry().top() == 0
+        finally:
+            dlg.close()
+            dlg.deleteLater()
+
+    def test_caption_close_rejects_without_emitting_apply(self, qapp, catalog):
+        from PySide6.QtWidgets import QDialog
+
+        dlg = DebloatPickerDialog(catalog)
+        applied: list = []
+        dlg.apply_requested.connect(lambda names, undo: applied.append((names, undo)))
+        rejected: list[bool] = []
+        dlg.rejected.connect(lambda: rejected.append(True))
+        try:
+            dlg.show()
+            qapp.processEvents()
+            dlg.title_bar.btn_close.click()
+            qapp.processEvents()
+            assert rejected == [True]
+            assert dlg.result() == QDialog.DialogCode.Rejected
+            assert not dlg.isVisible()
+            assert applied == []
+        finally:
+            dlg.deleteLater()
+
+    def test_apply_still_accepts_with_the_selection(self, qapp, catalog):
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox
+
+        dlg = DebloatPickerDialog(catalog)
+        applied: list = []
+        dlg.apply_requested.connect(lambda names, undo: applied.append((names, undo)))
+        try:
+            assert dlg.isModal()
+            dlg.show()
+            qapp.processEvents()
+            expected = dlg.selected_items()
+            assert expected
+            dlg.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Apply).click()
+            qapp.processEvents()
+            assert dlg.result() == QDialog.DialogCode.Accepted
+            assert not dlg.isVisible()
+            assert applied == [(expected, False)]
+        finally:
+            dlg.deleteLater()
 
 
 class TestDialogInitialState:

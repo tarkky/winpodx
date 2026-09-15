@@ -8,7 +8,6 @@ from pathlib import Path
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QDialog,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -23,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from winpodx.core.i18n import tr
 from winpodx.gui import theme
+from winpodx.gui._dialog_chrome import ChromeDialog
 from winpodx.gui.theme import (
     CONTROL_HEIGHT_W11,
     FONT_CAPTION,
@@ -37,8 +37,13 @@ from winpodx.utils.paths import data_dir
 from winpodx.utils.toml_writer import dumps as toml_dumps
 
 
-class AppProfileDialog(QDialog):
-    """Dialog for creating or editing a Windows app profile."""
+class AppProfileDialog(ChromeDialog):
+    """Dialog for creating or editing a Windows app profile.
+
+    Wears the main window's chrome (close-only title bar showing "Add App" /
+    "Edit App"); the header, form and button strip are mounted on
+    ``content_widget`` and keep their own styling.
+    """
 
     def __init__(
         self,
@@ -52,7 +57,7 @@ class AppProfileDialog(QDialog):
         icon_path: str = "",
         edit_mode: bool = False,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(parent, title=tr("Edit App") if edit_mode else tr("Add App"))
         self.edit_mode = edit_mode
         # Path of a custom icon the user picked this session (#530). Empty
         # means "no change" -- keep the detected/existing icon as-is. Seeded
@@ -60,11 +65,12 @@ class AppProfileDialog(QDialog):
         # FILE, if any) just feeds the preview thumbnail below.
         self._chosen_icon_path = ""
         self._current_icon_path = icon_path
-        self.setWindowTitle(tr("Edit App") if edit_mode else tr("Add App"))
         # Minimum size keeps the default compact, while allowing translations
-        # and long helper text to breathe instead of clipping.
-        self.setMinimumSize(580, 540)
-        self.resize(600, 560)
+        # and long helper text to breathe instead of clipping. The chrome bar
+        # sits on top of that space (0 when the WM draws the decorations), so
+        # the body keeps exactly the room it had.
+        self.setMinimumSize(580, 540 + self.chrome_height)
+        self.resize(600, 560 + self.chrome_height)
         self.setStyleSheet(
             theme.DIALOG
             + f"""
@@ -73,7 +79,7 @@ class AppProfileDialog(QDialog):
         """
         )
 
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout(self.content_widget)
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
 

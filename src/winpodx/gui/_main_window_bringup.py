@@ -72,7 +72,6 @@ from typing import Optional
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (
-    QDialog,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
@@ -85,6 +84,7 @@ from PySide6.QtWidgets import (
 
 from winpodx.core.i18n import tr
 from winpodx.gui import theme
+from winpodx.gui._dialog_chrome import ChromeDialog
 from winpodx.gui._widget_helpers import BusyDialog
 from winpodx.gui.icons import load_icon
 from winpodx.gui.theme import (
@@ -238,16 +238,27 @@ def _format_mmss(secs: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
-class BringUpProgressDialog(QDialog):
+class BringUpProgressDialog(ChromeDialog):
     """Modal-ish progress dialog driven by ``bringup_phase`` / ``bringup_done``.
 
     Construction MUST happen on the GUI thread. The dialog connects to
     the host window's two new signals; the host owns the worker.
+
+    Standalone it opens with the app-owned DialogChrome (close-only
+    ``TitleBar``); ``chrome=False`` builds the bare body for a host that
+    embeds it in its own surface (the setup wizard's Install page).
     """
 
-    def __init__(self, parent, *, on_cancel, cfg=None, phases=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(tr("Setting up Windows"))
+    def __init__(
+        self,
+        parent,
+        *,
+        on_cancel,
+        cfg=None,
+        phases=None,
+        chrome: bool = True,
+    ) -> None:
+        super().__init__(parent, title=tr("Setting up Windows"), chrome=chrome)
         self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setMinimumWidth(560)
         self.setStyleSheet(theme.DIALOG + theme.PLAIN_TEXT)
@@ -282,7 +293,7 @@ class BringUpProgressDialog(QDialog):
         # upwards so they can read prior lines without being yanked back.
         self._pod_tail_follow = True
 
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout(self.content_widget)
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(SPACE_M)
 

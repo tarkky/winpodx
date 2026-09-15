@@ -25,6 +25,7 @@ from winpodx.gui._main_window_settings_locale import (
 )
 from winpodx.gui._settings_card import make_settings_card, make_settings_group
 from winpodx.gui._setup_wizard_model import SetupAnswers, host_spec_summary
+from winpodx.gui._widget_helpers import guard_wheel_scroll
 
 
 class ConfigurationPage(QWidget):
@@ -79,6 +80,7 @@ class ConfigurationPage(QWidget):
         root.addWidget(hardware)
         root.addWidget(account)
         root.addStretch(1)
+        guard_wheel_scroll(self)
 
     def answers(self) -> SetupAnswers:
         """Read the current widget values."""

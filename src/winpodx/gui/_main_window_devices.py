@@ -38,6 +38,7 @@ from winpodx.core import devices as D
 from winpodx.core.config import Config
 from winpodx.core.i18n import tr
 from winpodx.gui import theme as theme_mod
+from winpodx.gui._dialog_chrome import ChromeDialog
 from winpodx.gui._main_window_devices_cards import DevicesCardsMixin
 from winpodx.gui._main_window_secondary_style import (
     apply_w11_button,
@@ -409,11 +410,10 @@ class DevicesMixin(DevicesCardsMixin):
             "{lost} until you detach + restart."
         ).format(lost=lost)
 
-        dlg = QDialog(self)
-        dlg.setWindowTitle(tr("Risky passthrough"))
+        dlg = ChromeDialog(self, title=tr("Risky passthrough"))
         dlg.setModal(True)
         dlg.setMinimumWidth(460)
-        lay = QVBoxLayout(dlg)
+        lay = QVBoxLayout(dlg.content_widget)
         lay.setContentsMargins(SPACE_L, SPACE_L, SPACE_L, SPACE_L)
         lay.setSpacing(SPACE_M)
 

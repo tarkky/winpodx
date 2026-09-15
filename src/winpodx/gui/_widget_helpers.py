@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QBoxLayout,
     QComboBox,
-    QDialog,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -39,6 +38,7 @@ from PySide6.QtWidgets import (
 from winpodx.core.app import AppInfo
 from winpodx.core.i18n import tr
 from winpodx.gui import theme
+from winpodx.gui._dialog_chrome import ChromeDialog
 from winpodx.gui._settings_card import (  # noqa: F401
     make_settings_card,
     make_settings_group,
@@ -325,7 +325,7 @@ def show_toast(
     QTimer.singleShot(msecs, toast.deleteLater)
 
 
-class BusyDialog(QDialog):
+class BusyDialog(ChromeDialog):
     """Modal "this is working" dialog for long-running operations.
 
     Shows a message, an indeterminate progress bar, and an optional
@@ -334,6 +334,9 @@ class BusyDialog(QDialog):
     (a plain callback list via :meth:`on_cancel`) to react. The caller runs
     the actual work on a worker thread and calls :meth:`finish` when done —
     :meth:`finish` is thread-safe (see its docstring).
+
+    Opens with the app-owned DialogChrome (close-only ``TitleBar`` carrying
+    ``title``); the body below lives on ``content_widget``.
     """
 
     # #550: closing the dialog from a worker thread must be marshaled to the
@@ -353,18 +356,18 @@ class BusyDialog(QDialog):
         eta_hint: str = "",
         cancellable: bool = False,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(parent, title=title)
         self._close_requested.connect(self.accept)
-        self.setWindowTitle(title)
         self.setModal(True)
         # #550: the old 380-wide / content-height dialog opened cramped (the
         # debloat task window was ~392x139). Give it a comfortable floor so the
-        # message + progress bar + ETA hint aren't squeezed.
-        self.setMinimumSize(480, 168)
+        # message + progress bar + ETA hint aren't squeezed. The floor is body
+        # room: when the frameless chrome is active its bar sits on top of it.
+        self.setMinimumSize(480, 168 + self.chrome_height)
         self.setStyleSheet(theme.DIALOG)
         self._cancel_cbs: list[Callable[[], None]] = []
 
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout(self.content_widget)
         layout.setContentsMargins(20, 20, 20, 16)
         layout.setSpacing(12)
 

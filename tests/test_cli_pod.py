@@ -7,6 +7,7 @@ import argparse
 import io
 import subprocess
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -55,7 +56,7 @@ def test_handle_pod_routes_lifecycle_arguments(monkeypatch: pytest.MonkeyPatch) 
     )
 
     start.assert_called_once_with(True, 77, tuning_override="safe")
-    recreate.assert_called_once_with(wipe_storage=True, keep_iso=True)
+    recreate.assert_called_once_with(wipe_storage=True, keep_iso=True, on_progress=None)
     wait_ready.assert_called_once_with(88, True, True)
 
 
@@ -1350,7 +1351,7 @@ class TestPodReset:
             lambda **kw: calls.update(recreate=kw),
         )
 
-        def _provision(_a):
+        def _provision(_a, *, on_progress=None):
             calls["provisioned"] = True
             return 0
 
@@ -1358,7 +1359,12 @@ class TestPodReset:
 
         pod_cli._reset(redownload_iso=False, assume_yes=True)
 
-        assert calls["recreate"] == {"wipe_storage": True, "keep_iso": True, "assume_yes": True}
+        assert calls["recreate"] == {
+            "wipe_storage": True,
+            "keep_iso": True,
+            "assume_yes": True,
+            "on_progress": None,
+        }
         assert calls["provisioned"] is True
         assert "Reset complete" in capsys.readouterr().out
 
@@ -1375,7 +1381,7 @@ class TestPodReset:
 
         calls = {}
         monkeypatch.setattr(pod_cli, "_recreate", lambda **kw: calls.update(recreate=kw))
-        monkeypatch.setattr("winpodx.cli.main._cmd_provision", lambda _a: 0)
+        monkeypatch.setattr("winpodx.cli.main._cmd_provision", lambda _a, **kw: 0)
 
         pod_cli.handle_pod(_a.Namespace(pod_command="reset", redownload_iso=False, yes=True))
 
@@ -1386,7 +1392,7 @@ class TestPodReset:
 
         calls = {}
         monkeypatch.setattr(pod_cli, "_recreate", lambda **kw: calls.update(recreate=kw))
-        monkeypatch.setattr("winpodx.cli.main._cmd_provision", lambda _a: 0)
+        monkeypatch.setattr("winpodx.cli.main._cmd_provision", lambda _a, **kw: 0)
 
         pod_cli._reset(redownload_iso=True, assume_yes=True)
 
@@ -1397,7 +1403,7 @@ class TestPodReset:
 
         calls = {}
         monkeypatch.setattr(pod_cli, "_recreate", lambda **kw: calls.update(recreate=kw))
-        monkeypatch.setattr("winpodx.cli.main._cmd_provision", lambda _a: 0)
+        monkeypatch.setattr("winpodx.cli.main._cmd_provision", lambda _a, **kw: 0)
         monkeypatch.setattr("builtins.input", lambda: "yes")
 
         pod_cli._reset(redownload_iso=False, assume_yes=False)
@@ -1409,8 +1415,153 @@ class TestPodReset:
         from winpodx.cli import pod as pod_cli
 
         monkeypatch.setattr(pod_cli, "_recreate", lambda **kw: None)
-        monkeypatch.setattr("winpodx.cli.main._cmd_provision", lambda _a: 1)
+        monkeypatch.setattr("winpodx.cli.main._cmd_provision", lambda _a, **kw: 1)
 
         pod_cli._reset(redownload_iso=False, assume_yes=True)
 
         assert "provisioning did not finish" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("command", ["reset", "recreate"])
+def test_handle_pod_forwards_progress_callback(
+    monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    # Given: a routed handler isolated from container operations.
+    handler = MagicMock()
+    callback = MagicMock()
+    monkeypatch.setattr(pod, f"_{command}", handler)
+    args = argparse.Namespace(pod_command=command, yes=True, redownload_iso=True, keep_iso=True)
+
+    # When: a caller supplies structured progress.
+    pod.handle_pod(args, on_progress=callback)
+
+    # Then: the same callback reaches the selected handler with its existing flags.
+    expected = (
+        {"redownload_iso": True, "assume_yes": True}
+        if command == "reset"
+        else {"wipe_storage": True, "keep_iso": True}
+    )
+    handler.assert_called_once_with(**expected, on_progress=callback)
+
+
+def test_reset_forwards_progress_to_recreate_and_provision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: reset's downstream operations are isolated.
+    recreate = MagicMock()
+    provision = MagicMock(return_value=0)
+    callback = MagicMock()
+    monkeypatch.setattr(pod, "_recreate", recreate)
+    monkeypatch.setattr("winpodx.cli.main._cmd_provision", provision)
+
+    # When: reset runs with progress enabled.
+    pod._reset(assume_yes=True, on_progress=callback)
+
+    # Then: both phases receive the same observer without changing reset options.
+    recreate.assert_called_once_with(
+        wipe_storage=True, keep_iso=True, assume_yes=True, on_progress=callback
+    )
+    assert provision.call_args.kwargs == {"on_progress": callback}
+    assert vars(provision.call_args.args[0]) == {
+        "retries": 5,
+        "timeout": 3600,
+        "logs": False,
+        "verbose": False,
+    }
+
+
+@pytest.mark.parametrize("rc", [0, 4, 5])
+@pytest.mark.parametrize("raises", [False, True])
+def test_reset_progress_preserves_output_and_failure_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    rc: int,
+    raises: bool,
+) -> None:
+    # Given: baseline reset output for a successful, timed-out or deferred provision.
+    monkeypatch.setattr(pod, "_recreate", MagicMock())
+    monkeypatch.setattr("winpodx.cli.main._cmd_provision", MagicMock(return_value=rc))
+    pod._reset(assume_yes=True)
+    baseline = capsys.readouterr()
+    events: list[tuple[str, str]] = []
+
+    def observe(stage: str, detail: str) -> None:
+        events.append((stage, detail))
+        if raises:
+            raise RuntimeError("observer unavailable")
+
+    # When: even a broken observer is supplied.
+    result = pod._reset(assume_yes=True, on_progress=observe)
+
+    # Then: reset still returns normally, and mirrors each print without duplicating output.
+    assert result is None
+    assert capsys.readouterr() == baseline
+    assert events == [
+        ("reset", "\nRe-running provisioning on the fresh guest..."),
+        ("reset", (baseline.out.splitlines()[-1] if rc == 0 else baseline.err.rstrip("\n"))),
+    ]
+
+
+@pytest.mark.usefixtures("cfg")
+@pytest.mark.parametrize("outcome", ["ready", "compose_error", "start_error", "aborted"])
+@pytest.mark.parametrize("raises", [False, True])
+def test_recreate_progress_mirrors_prints_without_changing_output(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    outcome: str,
+    raises: bool,
+) -> None:
+    # Given: mocked destructive boundaries and the current CLI output for this outcome.
+    monkeypatch.setattr("winpodx.core.pod.stop_pod", MagicMock())
+    monkeypatch.setattr("winpodx.core.pod.disguise.validate_disguise_image", MagicMock())
+    monkeypatch.setattr(pod, "_wipe_pod_storage", MagicMock())
+    monkeypatch.setattr("builtins.input", lambda: "no")
+    monkeypatch.setattr(
+        "winpodx.core.compose.generate_compose",
+        MagicMock(side_effect=OSError("readonly") if outcome == "compose_error" else None),
+    )
+    monkeypatch.setattr(
+        "winpodx.core.pod.start_pod",
+        MagicMock(
+            return_value=PodStatus(
+                PodState.ERROR if outcome == "start_error" else PodState.STARTING,
+                error="boot failed",
+            )
+        ),
+    )
+    expected_exit = 2 if outcome == "aborted" else 1
+
+    def run(callback: Callable[[str, str], None] | None = None) -> None:
+        if outcome == "ready":
+            pod._recreate(wipe_storage=True, keep_iso=True, assume_yes=True, on_progress=callback)
+        else:
+            with pytest.raises(SystemExit) as exc:
+                pod._recreate(
+                    wipe_storage=True,
+                    keep_iso=True,
+                    assume_yes=outcome != "aborted",
+                    on_progress=callback,
+                )
+            assert exc.value.code == expected_exit
+
+    run()
+    baseline = capsys.readouterr()
+    events: list[tuple[str, str]] = []
+
+    def observe(stage: str, detail: str) -> None:
+        events.append((stage, detail))
+        if raises:
+            raise RuntimeError("observer unavailable")
+
+    # When: recreate reports to an optional observer.
+    run(observe)
+
+    # Then: all printed messages are mirrored, including failures and prompts; exits are unchanged.
+    assert capsys.readouterr() == baseline
+    assert events
+    assert all(stage == "recreate" for stage, _ in events)
+    rendered = "".join(
+        detail + ("" if detail.endswith("Type 'WIPE' to confirm: ") else "\n")
+        for _, detail in events
+    )
+    assert rendered == baseline.out + baseline.err

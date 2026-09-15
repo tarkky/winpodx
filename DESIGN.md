@@ -20,6 +20,7 @@ Contract tests:
 |---------|------|
 | Tokens, scheme rebuild, inner-control QSS | `tests/test_gui_theme.py`, `tests/test_gui_theme_manager.py`, `tests/test_gui_inner_controls.py` |
 | Shell geometry, compact rail, indicator, a11y names | `tests/test_main_window_shell.py` |
+| Title bar anatomy, dialog chrome (`ChromeDialog`) | `tests/test_gui_title_bar.py`, `tests/test_gui_dialog_chrome.py` |
 | Page frame, common edges, card rhythm (all 8 pages) | `tests/test_gui_layout_contract.py` |
 | Dashboard, Applications, Settings, secondary pages, launcher | `tests/test_main_window_*.py`, `tests/test_launcher.py` |
 | Painted controls | `tests/test_gui_toggle_switch.py`, `tests/test_gui_ring_gauge.py` |
@@ -168,7 +169,7 @@ Radius: `RADIUS_XS` 2 / `S` 4 / `M` 4 / `L` 8 / `XL` 8 / `XXL` 8
 
 | Measure | Value | Where |
 |---------|-------|-------|
-| **Title bar** | **32**, full width, `nav_pane` colour; 16px app icon + 12px "WinPodX" left, three 46x32 caption buttons right (close hover `#C42B1C`); drag = `startSystemMove`, double-click = maximize; 6px border = `startSystemResize` | `TITLE_BAR_H`, `CAPTION_BTN_W`, `RESIZE_MARGIN` -- `_title_bar.py` / `_frameless.py`; `WINPODX_NATIVE_TITLEBAR=1` restores WM decorations and hides the bar |
+| **Title bar** | **32**, full width, `nav_pane` colour; 16px app icon + 12px "WinPodX" left, three 46x32 caption buttons right (close hover `#C42B1C`); drag = `startSystemMove`, double-click = maximize; 6px border = `startSystemResize`. **Dialog variant** (`TitleBar(title=, controls=DIALOG_CONTROLS)`): the dialog's own title, Close only, no double-click maximize -- see DialogChrome | `TITLE_BAR_H`, `CAPTION_BTN_W`, `RESIZE_MARGIN` -- `_title_bar.py` / `_frameless.py`; `WINPODX_NATIVE_TITLEBAR=1` restores WM decorations and hides the bar |
 | Content layer | `C.BASE` with an 8px top-left radius under the title bar (WinUI "layer") | `QWidget#contentLayer` |
 | **Window minimum** | `max(preferred x MIN_SHRINK_RATIO, rail + margins + widest page floor)` x `preferred_h x MIN_SHRINK_RATIO` -- derived, never a pixel constant; re-evaluated on every reflow with captions squeezed to the candidate column | `MIN_SHRINK_RATIO` 0.6, `_shell_geometry._apply_window_minimum` |
 | Nav overlay | below `NAV_COMPACT_BELOW` an opened pane **overlays** the content (slot stays 48, pane 320 raised, 1px edge) and light-dismisses on outside press or page switch | `_shell_geometry.py`, `#navSlot`, `#navOverlayEdge` |
@@ -389,6 +390,43 @@ Retained in `_stat_bar.py` for reuse; not used on the Dashboard.
   (`p.control_fill`, 1px top divider, 24px padding, buttons 32x96+).
 - **Contract test:** `tests/test_gui_inner_controls.py`.
 
+### DialogChrome (ChromeDialog)
+
+- **Scope:** every **app-owned custom `QDialog`** surface shares the main
+  window's chrome policy: the 32px shared `TitleBar`, the dialog's **own**
+  window title, a **Close-only** caption control, and the
+  `WINPODX_NATIVE_TITLEBAR=1` opt-out. **Out of scope:** Qt-native
+  `QMessageBox` / `QFileDialog` / `QInputDialog` (WM-decorated, DD-003), OS
+  tray notifications, `LauncherWindow` / `LaunchNotification` (popup and
+  tool-window flyouts, no caption), and progress widgets embedded inside
+  another surface (they inherit their host's chrome).
+- **Structure:** `ChromeDialog(FramelessMixin, QDialog)` (`_dialog_chrome.py`)
+  -> zero-margin, zero-spacing `QVBoxLayout`: `TitleBar` **first** (32,
+  `TITLE_BAR_H`) over a transparent `QWidget#dialogContent`
+  (`content_widget`) that the subclass fills. The bar is the shared
+  `TitleBar` with `title=` the dialog title and `controls=DIALOG_CONTROLS`:
+  16px app icon + 12px caption on `nav_pane`, one 46x32 Close button (hover
+  `#C42B1C`), **no Minimize / Maximize**, double-click does **not** maximize.
+  Drag = `startSystemMove`; 6px border = `startSystemResize`, exactly as the
+  main window.
+- **Native opt-out:** `WINPODX_NATIVE_TITLEBAR=1` keeps WM decorations: the
+  bar is still built but hidden and `chrome_height` is 0 (32 otherwise) --
+  the same rule the main window and `SetupWizardDialog` follow. `chrome=False`
+  builds no bar and sets no frameless hint, for a dialog hosted inside another
+  surface.
+- **Semantics:** plain `QDialog` modality and result codes; the caption Close
+  runs `close()` -> `reject()`. The subclass owns body styling (`theme.DIALOG`,
+  `C.MANTLE` body, `QDialogButtonBox` strip -- see Inner controls). Scheme
+  changes reach the bar only through `ThemeManager.scheme_changed ->
+  title_bar.restyle()`; `ChromeDialog` never restyles the body.
+- **Adopters:** `SetupWizardDialog` composes the same policy directly (it
+  predates `ChromeDialog`). `BusyDialog`, standalone `BringUpProgressDialog`,
+  `AppProfileDialog`, `DeletedAppsDialog`, `DebloatPickerDialog`, and the two
+  inline warning confirms inherit or construct `ChromeDialog`; the setup
+  wizard embeds `BringUpProgressDialog(chrome=False)` to avoid nested chrome.
+- **Contract test:** `tests/test_gui_title_bar.py`,
+  `tests/test_gui_dialog_chrome.py`.
+
 ### IconLoader
 
 - `gui/icons/load_icon(name, colour, size)`: SVG recolour + render + cache.
@@ -478,3 +516,4 @@ a test or a fixed token.
 | DD-001 | Minor | Web `web/style.css` still uses the old GitHub-dark palette | Open, out of GUI scope |
 | DD-002 | Minor | A few `_main_window_*` modules still bind QSS string names at import for surfaces that are only built once; they are covered by `_restyle_*` hooks on scheme change | Open; convert to `theme.*` reads when touched |
 | DD-003 | Minor | Combo popup list and QMessageBox use Qt-native geometry (not WinUI 32px rows) on some platform themes | Open |
+| DD-004 | Minor | App-owned custom dialogs used WM decorations instead of DialogChrome | Closed; all seven owned surfaces use `ChromeDialog`, while embedded progress passes `chrome=False` |

@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
+from collections.abc import Callable
 
 from winpodx import __version__
 from winpodx.core.i18n import tr
+
+log = logging.getLogger(__name__)
 
 
 def _positive_int(value: str) -> int:
@@ -1125,7 +1129,9 @@ def _dispatch(args: argparse.Namespace) -> None:
         sys.exit(handle_host_open(args))
 
 
-def _cmd_provision(args: argparse.Namespace) -> int:
+def _cmd_provision(
+    args: argparse.Namespace, *, on_progress: Callable[[str, str], None] | None = None
+) -> int:
     """Drive ``core.provisioner.finish_provisioning`` from the CLI (item B).
 
     Flags map 1:1 onto the helper parameters. Run with no flags it
@@ -1157,6 +1163,11 @@ def _cmd_provision(args: argparse.Namespace) -> int:
         # Always surface stage transitions; --verbose just keeps the raw
         # detail lines flowing without buffering.
         print(f"  [{stage}] {detail}", file=sys.stderr, flush=verbose)
+        if on_progress is not None:
+            try:
+                on_progress(stage, detail)
+            except Exception:  # noqa: BLE001 — progress is best-effort
+                log.debug("Provision progress callback failed", exc_info=True)
 
     def _rich_wait(_cfg: Config, timeout: int) -> bool:
         # Route the wait-ready stage through the log-streaming wait so a fresh
@@ -1168,8 +1179,16 @@ def _cmd_provision(args: argparse.Namespace) -> int:
         # instead of the process dying mid-chain.
         from winpodx.cli.pod import _wait_ready
 
+        def _on_log(line: str) -> None:
+            # _wait_ready already prints these lines; forward without printing again.
+            if on_progress is not None:
+                try:
+                    on_progress("wait_ready", line)
+                except Exception:  # noqa: BLE001 — progress is best-effort
+                    log.debug("Wait-ready progress callback failed", exc_info=True)
+
         try:
-            _wait_ready(timeout, show_logs=True, verbose=verbose)
+            _wait_ready(timeout, show_logs=True, verbose=verbose, on_log=_on_log)
             return True
         except SystemExit as exc:
             return exc.code in (0, None)

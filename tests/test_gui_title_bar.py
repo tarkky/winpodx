@@ -9,11 +9,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QWidget  # noqa: E402
 
 from winpodx.gui import theme  # noqa: E402
 from winpodx.gui._frameless import FramelessMixin, edges_at  # noqa: E402
-from winpodx.gui._title_bar import TitleBar  # noqa: E402
+from winpodx.gui._title_bar import DIALOG_CONTROLS, WINDOW_CONTROLS, TitleBar  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -22,10 +23,10 @@ def qapp() -> QApplication:
 
 
 class _Host(FramelessMixin, QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, **bar_kwargs) -> None:
         QMainWindow.__init__(self)
         self.setCentralWidget(QWidget())
-        self.title_bar = TitleBar(self)
+        self.title_bar = TitleBar(self, **bar_kwargs)
 
 
 def test_title_bar_anatomy_matches_windows_caption_controls(qapp: QApplication) -> None:
@@ -69,6 +70,79 @@ def test_caption_buttons_drive_the_window(qapp: QApplication, monkeypatch) -> No
     monkeypatch.setattr(host, "close", lambda: closed.append(True))
     bar.btn_close.click()
     assert closed == [True]
+
+
+def test_default_controls_constant_matches_windows_caption_order() -> None:
+    assert WINDOW_CONTROLS == ("minimize", "maximize", "close")
+    assert DIALOG_CONTROLS == ("close",)
+
+
+def test_dialog_bar_shows_own_title_with_close_only(qapp: QApplication) -> None:
+    host = _Host(title="Reinstall Windows", controls=DIALOG_CONTROLS)
+    bar = host.title_bar
+
+    assert bar.height() == theme.TITLE_BAR_H
+    assert bar.title_label.text() == "Reinstall Windows"
+    assert not bar.icon_label.pixmap().isNull()
+    names = [b.objectName() for b in bar.findChildren(QPushButton)]
+    assert names == ["captionClose"]
+    assert bar.btn_minimize is None
+    assert bar.btn_maximize is None
+    assert bar.btn_close is not None
+    assert bar.btn_close.size().width() == theme.CAPTION_BTN_W
+    assert bar.btn_close.size().height() == theme.TITLE_BAR_H
+    assert bar.btn_close.accessibleName()
+
+
+def test_dialog_bar_close_still_closes_the_window(qapp: QApplication, monkeypatch) -> None:
+    host = _Host(controls=DIALOG_CONTROLS)
+    closed: list[bool] = []
+    monkeypatch.setattr(host, "close", lambda: closed.append(True))
+
+    host.title_bar.btn_close.click()
+
+    assert closed == [True]
+
+
+def test_double_click_maximizes_only_when_a_maximize_button_exists(qapp: QApplication) -> None:
+    window = _Host()
+    window.resize(600, 400)
+    window.show()
+    qapp.processEvents()
+    QTest.mouseDClick(window.title_bar, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    assert window.windowState() & Qt.WindowState.WindowMaximized
+    window.close()
+
+    dialog = _Host(controls=DIALOG_CONTROLS)
+    dialog.resize(600, 400)
+    dialog.show()
+    qapp.processEvents()
+    QTest.mouseDClick(dialog.title_bar, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    assert not (dialog.windowState() & Qt.WindowState.WindowMaximized)
+    dialog.close()
+
+
+def test_dialog_bar_survives_state_change_and_restyle_without_min_max(
+    qapp: QApplication,
+) -> None:
+    host = _Host(controls=DIALOG_CONTROLS)
+    host.show()
+    qapp.processEvents()
+
+    host.showMaximized()
+    qapp.processEvents()
+    host.title_bar.restyle()
+
+    assert "QWidget#titleBar" in host.title_bar.styleSheet()
+    assert theme.nav_pane_color() in host.title_bar.styleSheet()
+    host.close()
+
+
+def test_unknown_caption_control_is_rejected(qapp: QApplication) -> None:
+    with pytest.raises(ValueError, match="maximise"):
+        _Host(controls=("maximise",))
 
 
 def test_frameless_is_default_and_native_titlebar_env_opts_out(

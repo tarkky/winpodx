@@ -1234,6 +1234,98 @@ def test_bringup_dialog_has_no_legacy_hex_and_controls_are_32px() -> None:
         dlg.deleteLater()
 
 
+# ----- DialogChrome: standalone close-only TitleBar (DESIGN.md DD-004) ----
+
+
+def test_standalone_dialog_opens_with_close_only_chrome_showing_its_own_title() -> None:
+    _ensure_qapp()
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QPushButton
+
+    from winpodx.gui import theme
+    from winpodx.gui._dialog_chrome import ChromeDialog
+    from winpodx.gui._main_window_bringup import BringUpProgressDialog
+    from winpodx.gui._title_bar import TitleBar
+
+    dlg = BringUpProgressDialog(None, on_cancel=lambda: None, cfg=None)
+    try:
+        assert isinstance(dlg, ChromeDialog)
+        assert dlg._frameless_active is True
+        assert dlg.windowFlags() & Qt.WindowType.FramelessWindowHint
+        assert dlg.windowTitle() == "Setting up Windows"
+        assert dlg.windowModality() == Qt.WindowModality.WindowModal
+
+        bar = dlg.title_bar
+        assert isinstance(bar, TitleBar)
+        assert bar.height() == theme.TITLE_BAR_H
+        assert bar.title_label.text() == "Setting up Windows"
+        assert [b.objectName() for b in bar.findChildren(QPushButton)] == ["captionClose"]
+        assert bar.btn_minimize is None and bar.btn_maximize is None
+        assert dlg.chrome_height == theme.TITLE_BAR_H
+        # The cancel button lives in the body, distinct from the chrome's close.
+        assert dlg.cancel_btn is not bar.btn_close
+    finally:
+        dlg.reject()
+
+
+def test_embedded_dialog_builds_no_chrome_for_the_wizard_host() -> None:
+    """``chrome=False`` matches ``ChromeDialog``'s embedded contract exactly."""
+    _ensure_qapp()
+    from PySide6.QtCore import Qt
+
+    from winpodx.gui._main_window_bringup import BringUpProgressDialog
+
+    dlg = BringUpProgressDialog(None, on_cancel=lambda: None, cfg=None, chrome=False)
+    try:
+        assert dlg.title_bar is None
+        assert dlg._frameless_active is False
+        assert not (dlg.windowFlags() & Qt.WindowType.FramelessWindowHint)
+        assert dlg.chrome_height == 0
+        assert dlg.windowTitle() == "Setting up Windows"
+        outer = dlg.layout()
+        assert outer.count() == 1
+        assert outer.itemAt(0).widget() is dlg.content_widget
+    finally:
+        dlg.deleteLater()
+
+
+def test_standalone_dialog_cancel_still_invokes_callback_and_disables_button() -> None:
+    _ensure_qapp()
+    from winpodx.gui._main_window_bringup import BringUpProgressDialog
+
+    cancelled: list[bool] = []
+    dlg = BringUpProgressDialog(None, on_cancel=lambda: cancelled.append(True), cfg=None)
+    try:
+        dlg.on_phase("phase_1_pod", "Attempt 1 - probing")  # cancellable phase
+        dlg.cancel_btn.click()
+
+        assert cancelled == [True]
+        assert dlg.cancel_btn.text() == "Cancelling..."
+        assert not dlg.cancel_btn.isEnabled()
+    finally:
+        dlg.reject()
+
+
+def test_standalone_dialog_close_button_rejects_and_tears_down_tail() -> None:
+    """The chrome's caption Close still goes through ``closeEvent`` cleanup."""
+    _ensure_qapp()
+    from winpodx.gui._main_window_bringup import BringUpProgressDialog
+
+    dlg = BringUpProgressDialog(None, on_cancel=lambda: None, cfg=None)
+    dlg.show()
+    rejected: list[bool] = []
+    dlg.rejected.connect(lambda: rejected.append(True))
+    stopped: list[bool] = []
+    dlg._stop_pod_tail = lambda: stopped.append(True)  # type: ignore[method-assign]
+
+    dlg.title_bar.btn_close.click()
+
+    assert rejected == [True]
+    assert dlg.result() == dlg.DialogCode.Rejected
+    assert not dlg._tick_timer.isActive()
+    assert True in stopped
+
+
 def test_bringup_dialog_follows_the_scheme_active_when_it_opens() -> None:
     _ensure_qapp()
     from winpodx.gui import theme

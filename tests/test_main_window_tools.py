@@ -1058,15 +1058,19 @@ class _ModalAnswer:
 
     Arm it *before* the call that opens the dialog: the zero-interval
     timer first fires once ``exec()``'s nested loop starts spinning.
+    ``button_index`` addresses the dialog's *body* buttons; the caption
+    Close is driven separately via ``caption_close``.
     """
 
-    def __init__(self, button_index=None, accept=True, max_ticks=2000) -> None:
+    def __init__(self, button_index=None, accept=True, caption_close=False, max_ticks=2000) -> None:
         self.button_index = button_index
         self.accept = accept
+        self.caption_close = caption_close
         self.max_ticks = max_ticks
         self.ticks = 0
         self.button_texts = []
         self.timed_out = False
+        self.dialog = None
         self._timer = QTimer()
         self._timer.setInterval(0)
         self._timer.timeout.connect(self._tick)
@@ -1084,9 +1088,14 @@ class _ModalAnswer:
                 self._timer.stop()
             return
         self._timer.stop()
-        buttons = dlg.findChildren(QPushButton)
+        self.dialog = dlg
+        buttons = [
+            b for b in dlg.findChildren(QPushButton) if not b.objectName().startswith("caption")
+        ]
         self.button_texts = [b.text() for b in buttons]
-        if self.button_index is not None and len(buttons) > self.button_index:
+        if self.caption_close:
+            dlg.title_bar.btn_close.click()
+        elif self.button_index is not None and len(buttons) > self.button_index:
             buttons[self.button_index].click()
         elif self.accept:
             dlg.accept()
@@ -1109,6 +1118,49 @@ def test_confirm_with_callout_cancel_button_refuses(maint):
     result = _confirm_with_callout(maint, "Title", "Body", "Callout")
     assert not answer.timed_out
     assert result is False
+
+
+def test_confirm_with_callout_wears_the_shared_dialog_chrome(maint, monkeypatch):
+    from PySide6.QtCore import Qt
+
+    from winpodx.gui import theme
+    from winpodx.gui._dialog_chrome import ChromeDialog
+
+    monkeypatch.delenv("WINPODX_NATIVE_TITLEBAR", raising=False)
+    answer = _ModalAnswer(button_index=0).arm()
+    _confirm_with_callout(maint, "Grow Disk", "Body", "The guest reboots.", level="danger")
+    dlg = answer.dialog
+
+    assert isinstance(dlg, ChromeDialog)
+    assert dlg.parent() is maint
+    assert dlg.isModal()
+    assert dlg.minimumWidth() == 420
+    assert dlg.windowTitle() == "Grow Disk"
+    assert dlg.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert dlg.title_bar.title_label.text() == "Grow Disk"
+    assert dlg.title_bar.btn_minimize is None and dlg.title_bar.btn_maximize is None
+    assert dlg.title_bar.btn_close is not None
+    assert dlg.chrome_height == theme.TITLE_BAR_H
+    assert dlg.layout().itemAt(0).widget() is dlg.title_bar
+    assert dlg.layout().itemAt(1).widget() is dlg.content_widget
+    body = dlg.content_widget.layout()
+    assert body is not None
+    callout = body.itemAt(0).widget()
+    assert callout.objectName() == "winpodxCallout"
+    assert callout.parentWidget() is dlg.content_widget
+    proceed = next(b for b in dlg.findChildren(QPushButton) if b.text() == "Proceed")
+    assert proceed.parentWidget() is dlg.content_widget
+    assert proceed.styleSheet() == theme.BTN_DANGER
+
+
+def test_confirm_with_callout_caption_close_refuses(maint, monkeypatch):
+    monkeypatch.delenv("WINPODX_NATIVE_TITLEBAR", raising=False)
+    answer = _ModalAnswer(caption_close=True).arm()
+    result = _confirm_with_callout(maint, "Title", "Body", "Callout")
+    assert not answer.timed_out
+    assert answer.button_texts == ["Cancel", "Proceed"]
+    assert result is False
+    assert answer.dialog.result() == QDialog.DialogCode.Rejected
 
 
 # ----- Logs page (LogsMixin) --------------------------------------------

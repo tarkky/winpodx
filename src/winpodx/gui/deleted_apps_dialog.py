@@ -13,7 +13,6 @@ from collections.abc import Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -25,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from winpodx.core.i18n import tr
 from winpodx.gui import theme
+from winpodx.gui._dialog_chrome import ChromeDialog
 from winpodx.gui.theme import (
     CONTROL_HEIGHT_W11,
     FONT_TITLE,
@@ -35,8 +35,12 @@ from winpodx.gui.theme import (
 )
 
 
-class DeletedAppsDialog(QDialog):
-    """List tombstoned (deleted) app slugs with per-row + bulk restore."""
+class DeletedAppsDialog(ChromeDialog):
+    """List tombstoned (deleted) app slugs with per-row + bulk restore.
+
+    Wears the main window's chrome (close-only title bar showing "Deleted
+    Apps"); the list body and button strip are mounted on ``content_widget``.
+    """
 
     def __init__(
         self,
@@ -45,14 +49,15 @@ class DeletedAppsDialog(QDialog):
         slugs: list[str],
         on_restore: Callable[[list[str]], None],
     ) -> None:
-        super().__init__(parent)
+        super().__init__(parent, title=tr("Deleted Apps"))
         self._on_restore = on_restore
         self._rows: dict[str, QFrame] = {}
-        self.setWindowTitle(tr("Deleted Apps"))
-        self.setMinimumSize(440, 420)
+        # The chrome bar sits on top of the prior minimum (0 under native
+        # decorations), so the list keeps the room it had.
+        self.setMinimumSize(440, 420 + self.chrome_height)
         self.setStyleSheet(theme.DIALOG + f"QLabel {{ color: {C.TEXT}; }}")
 
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout(self.content_widget)
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(SPACE_M)
 

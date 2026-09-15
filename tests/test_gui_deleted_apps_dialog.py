@@ -29,6 +29,11 @@ def _ensure_qapp():
     return app
 
 
+@pytest.fixture(autouse=True)
+def _frameless_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WINPODX_NATIVE_TITLEBAR", raising=False)
+
+
 def _make(slugs):
     _ensure_qapp()
     restored: list[list[str]] = []
@@ -167,3 +172,112 @@ def test_deleted_apps_dialog_has_a_button_strip() -> None:
     strip = dialog.findChild(QFrame, "dialogButtonStrip")
     assert strip is not None
     assert dialog._restore_all_btn.minimumWidth() >= 96
+
+
+def test_deleted_apps_dialog_wears_close_only_chrome_with_its_window_title() -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QPushButton
+
+    from winpodx.gui._dialog_chrome import ChromeDialog
+
+    dialog, _ = _make(["word"])
+    try:
+        assert isinstance(dialog, ChromeDialog)
+        assert dialog._frameless_active is True
+        assert dialog.windowFlags() & Qt.WindowType.FramelessWindowHint
+        assert dialog.windowTitle() == "Deleted Apps"
+        bar = dialog.title_bar
+        assert bar is not None
+        assert bar.title_label.text() == "Deleted Apps"
+        assert [b.objectName() for b in bar.findChildren(QPushButton)] == ["captionClose"]
+        assert bar.btn_minimize is None and bar.btn_maximize is None
+    finally:
+        dialog.close()
+
+
+def test_deleted_apps_dialog_mounts_its_body_on_the_chrome_content_widget() -> None:
+    from PySide6.QtCore import QMargins, QPoint
+    from PySide6.QtWidgets import QFrame, QLabel
+
+    qapp = _ensure_qapp()
+    dialog, _ = _make(["word"])
+    try:
+        outer = dialog.layout()
+        assert outer.count() == 2
+        assert outer.itemAt(0).widget() is dialog.title_bar
+        assert outer.itemAt(1).widget() is dialog.content_widget
+
+        body = dialog.content_widget.layout()
+        assert body.contentsMargins() == QMargins(24, 20, 24, 20)
+        assert body.spacing() == theme.SPACE_M
+        heading = body.itemAt(0).widget()
+        assert isinstance(heading, QLabel)
+        assert heading.text() == "Restore deleted apps"
+        strip = dialog.findChild(QFrame, "dialogButtonStrip")
+        assert body.itemAt(body.count() - 1).widget() is strip
+        assert strip.parentWidget() is dialog.content_widget
+        assert dialog._rows["word"].window() is dialog
+
+        dialog.show()
+        qapp.processEvents()
+        assert dialog.title_bar.geometry().top() == 0
+        assert dialog.content_widget.geometry().top() == theme.TITLE_BAR_H
+        assert heading.mapTo(dialog, QPoint(0, 0)) == QPoint(24, theme.TITLE_BAR_H + 20)
+    finally:
+        dialog.close()
+
+
+def test_deleted_apps_dialog_adds_the_chrome_on_top_of_its_prior_minimum() -> None:
+    from PySide6.QtCore import QSize
+
+    dialog, _ = _make(["word"])
+    try:
+        assert dialog.chrome_height == theme.TITLE_BAR_H
+        assert dialog.minimumSize() == QSize(440, 420 + theme.TITLE_BAR_H)
+    finally:
+        dialog.close()
+
+
+def test_deleted_apps_dialog_native_titlebar_env_keeps_prior_minimum_and_wm_decorations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from PySide6.QtCore import QSize, Qt
+
+    monkeypatch.setenv("WINPODX_NATIVE_TITLEBAR", "1")
+    qapp = _ensure_qapp()
+    dialog, _ = _make(["word"])
+    try:
+        assert dialog._frameless_active is False
+        assert not (dialog.windowFlags() & Qt.WindowType.FramelessWindowHint)
+        assert dialog.windowTitle() == "Deleted Apps"
+        assert dialog.title_bar is not None
+        assert dialog.title_bar.isHidden()
+        assert dialog.chrome_height == 0
+        assert dialog.minimumSize() == QSize(440, 420)
+
+        dialog.show()
+        qapp.processEvents()
+        assert not dialog.title_bar.isVisible()
+        assert dialog.content_widget.geometry().top() == 0
+    finally:
+        dialog.close()
+
+
+def test_deleted_apps_dialog_caption_close_rejects_without_restoring() -> None:
+    from PySide6.QtWidgets import QDialog
+
+    qapp = _ensure_qapp()
+    dialog, restored = _make(["word", "excel"])
+    rejected: list[bool] = []
+    dialog.rejected.connect(lambda: rejected.append(True))
+    dialog.show()
+    qapp.processEvents()
+
+    dialog.title_bar.btn_close.click()
+    qapp.processEvents()
+
+    assert rejected == [True]
+    assert dialog.result() == QDialog.DialogCode.Rejected
+    assert not dialog.isVisible()
+    assert restored == []
+    assert list(dialog._rows) == ["excel", "word"]

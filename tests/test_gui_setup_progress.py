@@ -9,14 +9,21 @@ Two confirmed defects on current main, each locked here by behaviour
 2. The wizard never connects worker progress into the ``InstallPage``
    checklist / visible log, so multi-stage progression is invisible.
 
+A third test locks the reinstall route: ``handle_pod`` reset progress
+(recreate steps + the same provisioning stages) must reach the same
+``InstallPage`` log and checklist while the install is still running.
+
 Everything is patched at the lookup site; no real podman/docker/system
 state is touched.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
+import threading
 import time
+from collections.abc import Callable
 
 import pytest
 
@@ -25,8 +32,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
 
+from winpodx.core.config import Config  # noqa: E402
 from winpodx.setup_wizard.host_state import HostState  # noqa: E402
 
 # The real finish_provisioning stage slugs on the podman/docker path, in order,
@@ -39,6 +47,17 @@ _FINISH_PROVISIONING_STAGES: tuple[tuple[str, str], ...] = (
     ("discovery", "Discovering and registering apps..."),
     ("reverse_open", "Starting reverse-open listener..."),
 )
+
+# What ``handle_pod(reset)`` streams before finish_provisioning's own stages:
+# the recreate steps and the reset hand-off. Neither slug owns a checklist row,
+# so they must reach the visible log without disturbing row 0.
+_RESET_PRE_STAGES: tuple[tuple[str, str], ...] = (
+    ("recreate", "Stopping pod..."),
+    ("recreate", "Regenerating compose.yaml from current config..."),
+    ("recreate", "Starting pod with new compose..."),
+    ("reset", "Re-running provisioning on the fresh guest..."),
+)
+_RESET_DONE_DETAIL = "Reset complete. The guest is provisioned and ready."
 
 
 def _ensure_qapp() -> QApplication:
@@ -121,6 +140,64 @@ def test_wizard_honors_native_titlebar_env(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 # --------------------------------------------------------------------------
+# DialogChrome (DD-004) — embedded InstallPage stays chrome-free
+# --------------------------------------------------------------------------
+
+
+def test_install_page_progress_has_no_titlebar_when_embedded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ensure_qapp()
+    from winpodx.gui._setup_wizard_pages import InstallPage
+    from winpodx.gui._title_bar import TitleBar
+
+    page = InstallPage(on_cancel=lambda: None, cfg=None)
+    page.begin()
+    try:
+        dlg = page.progress
+        assert dlg is not None
+        assert dlg.title_bar is None
+        assert dlg.findChildren(TitleBar) == []
+        assert not (dlg.windowFlags() & Qt.WindowType.FramelessWindowHint)
+        assert dlg.windowModality() == Qt.WindowModality.NonModal
+        assert dlg.chrome_height == 0
+        # The checklist rows are still fully populated without any chrome.
+        assert len(dlg._row_widgets) == len(_FINISH_PROVISIONING_STAGES)
+        assert dlg.header.text() != ""
+    finally:
+        page.deleteLater()
+
+
+def test_wizard_install_page_stays_chrome_free_inside_the_framed_wizard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ensure_qapp()
+    _patch_detect(monkeypatch, _ok_state)
+
+    def _fake_handle_setup(args, *, on_progress=None) -> None:
+        assert on_progress is not None
+        for stage, detail in _FINISH_PROVISIONING_STAGES:
+            on_progress(stage, detail)
+
+    monkeypatch.setattr("winpodx.cli.setup_cmd.handle_setup", _fake_handle_setup)
+    from winpodx.gui._setup_wizard import SetupWizardDialog
+    from winpodx.gui._title_bar import TitleBar
+
+    dlg = SetupWizardDialog(None, mode="first-run")
+    dlg.show()
+    try:
+        for _ in range(4):
+            dlg.next_btn.click()
+        _wait_until(lambda: dlg.pages.currentIndex() == 5)
+
+        assert dlg.findChildren(TitleBar) == [dlg.title_bar]
+        assert dlg.install.progress.title_bar is None
+    finally:
+        _wait_until(lambda: dlg._thread is None)
+        dlg.close()
+
+
+# --------------------------------------------------------------------------
 # Defect 2 — wizard wires worker progress into checklist + visible log
 # --------------------------------------------------------------------------
 
@@ -161,5 +238,121 @@ def test_wizard_reflects_worker_progress_in_checklist_and_log(
         assert started_rows == len(_FINISH_PROVISIONING_STAGES)
         assert dlg._scroll.verticalScrollBar().maximum() == 0
     finally:
+        _wait_until(lambda: dlg._thread is None)
+        dlg.close()
+
+
+# --------------------------------------------------------------------------
+# Reinstall route — handle_pod(reset) progress reaches the same log/checklist
+# --------------------------------------------------------------------------
+
+
+def test_reinstall_wizard_streams_handle_pod_progress_before_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ensure_qapp()
+    _patch_detect(monkeypatch, _ok_state)
+
+    calls: list[str] = []
+    fake_cfg = Config()
+    preset_targets: list[Config] = []
+    saved: list[Config] = []
+    received: list[tuple[argparse.Namespace, Callable[[str, str], None] | None]] = []
+    release = threading.Event()
+
+    def _fake_load(cls: type[Config]) -> Config:
+        calls.append("load")
+        return fake_cfg
+
+    def _fake_save(self: Config) -> None:
+        calls.append("save")
+        saved.append(self)
+
+    def _fake_presets(cfg: Config, args: argparse.Namespace) -> list[str]:
+        calls.append("presets")
+        preset_targets.append(cfg)
+        return []
+
+    def _unexpected_handle_setup(args: argparse.Namespace, *, on_progress=None) -> None:
+        calls.append("handle_setup")
+
+    def _fake_handle_pod(
+        args: argparse.Namespace, *, on_progress: Callable[[str, str], None] | None = None
+    ) -> None:
+        calls.append("handle_pod")
+        received.append((args, on_progress))
+        if on_progress is None:
+            return
+        for stage, detail in _RESET_PRE_STAGES:
+            on_progress(stage, detail)
+        for stage, detail in _FINISH_PROVISIONING_STAGES:
+            on_progress(stage, detail)
+        if not release.wait(timeout=5.0):
+            raise TimeoutError("test never released the fake reset")
+        on_progress("reset", _RESET_DONE_DETAIL)
+
+    monkeypatch.setattr(Config, "load", classmethod(_fake_load))
+    monkeypatch.setattr(Config, "save", _fake_save)
+    monkeypatch.setattr("winpodx.cli.setup_cmd.apply_setup_presets", _fake_presets)
+    monkeypatch.setattr("winpodx.cli.setup_cmd.handle_setup", _unexpected_handle_setup)
+    monkeypatch.setattr("winpodx.cli.pod.handle_pod", _fake_handle_pod)
+    from winpodx.gui._setup_wizard import SetupWizardDialog
+
+    dlg = SetupWizardDialog(None, mode="reinstall")
+    dlg.show()
+    try:
+        # Given: a reinstall wizard driven through Welcome -> Review -> Install.
+        for _ in range(4):
+            dlg.next_btn.click()
+        progress = dlg.install.progress
+        assert progress is not None
+
+        # Then: the worker hands handle_pod a confirmed, ISO-keeping reset
+        #       plus the progress callback (not the bare CLI call).
+        _wait_until(lambda: bool(received))
+        args, on_progress = received[0]
+        assert on_progress is not None
+        assert args.pod_command == "reset"
+        assert args.yes is True
+        assert args.redownload_iso is False
+
+        # When: the fake reset has streamed every stage but has not returned.
+        last_detail = _FINISH_PROVISIONING_STAGES[-1][1]
+        _wait_until(lambda: last_detail in dlg.install.log_text())
+
+        # Then: the install is still running and the user can already see it.
+        assert dlg.pages.currentIndex() == 4
+        assert dlg._thread is not None and dlg._thread.isRunning()
+        assert progress._done is False
+        assert progress.pod_log_view.isVisible()
+        log_text = dlg.install.log_text()
+        assert "pod log unavailable" not in log_text
+        for stage, detail in _RESET_PRE_STAGES:
+            assert f"[{stage}] {detail}" in log_text
+        for stage, detail in _FINISH_PROVISIONING_STAGES:
+            assert f"[{stage}] {detail}" in log_text
+        assert log_text.index("[recreate] Stopping pod...") < log_text.index("[wait_ready]")
+        assert set(progress._phase_started_at) == set(range(len(_FINISH_PROVISIONING_STAGES)))
+        assert progress._active_phase_idx == len(_FINISH_PROVISIONING_STAGES) - 1
+
+        # When: the reset returns.
+        release.set()
+        _wait_until(lambda: dlg.pages.currentIndex() == 5)
+
+        # Then: the reinstall route ran in order, and both the checklist and
+        #       the Finish page report success.
+        assert calls == ["load", "presets", "save", "handle_pod"]
+        assert preset_targets == [fake_cfg]
+        assert saved == [fake_cfg]
+        assert f"[reset] {_RESET_DONE_DETAIL}" in dlg.install.log_text()
+        assert progress._done is True
+        assert len(progress._phase_done_at) == len(_FINISH_PROVISIONING_STAGES)
+        assert dlg.finish.is_failure is False
+        open_apps = dlg.finish.findChild(QPushButton, "wizardOpenApps")
+        retry = dlg.finish.findChild(QPushButton, "wizardRetry")
+        assert open_apps is not None and open_apps.isVisibleTo(dlg.finish)
+        assert retry is not None and not retry.isVisibleTo(dlg.finish)
+    finally:
+        release.set()
         _wait_until(lambda: dlg._thread is None)
         dlg.close()

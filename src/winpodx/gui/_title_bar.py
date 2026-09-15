@@ -1,7 +1,16 @@
 # SPDX-License-Identifier: MIT
-"""Windows 11-style caption bar: app icon, title, Minimize / Maximize / Close."""
+"""Windows 11-style caption bar: app icon, title, Minimize / Maximize / Close.
+
+The main window uses the full caption (``WINDOW_CONTROLS``); app-owned
+dialogs use the same bar with their own title and Close only
+(``DIALOG_CONTROLS``, see ``_dialog_chrome.ChromeDialog``).
+"""
 
 from __future__ import annotations
+
+import weakref
+from collections.abc import Sequence
+from typing import Final
 
 from PySide6.QtCore import QEvent, QObject, QRect, Qt
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
@@ -13,6 +22,10 @@ from winpodx.gui import theme
 _GLYPH = 10
 _CLOSE_HOVER = "#C42B1C"
 _CLOSE_PRESSED = "#B12A1B"
+
+APP_TITLE: Final = "WinPodX"
+WINDOW_CONTROLS: Final[tuple[str, ...]] = ("minimize", "maximize", "close")
+DIALOG_CONTROLS: Final[tuple[str, ...]] = ("close",)
 
 
 class _CaptionButton(QPushButton):
@@ -81,11 +94,26 @@ def _tinted(hex_color: str, alpha: float) -> QColor:
 
 
 class TitleBar(QWidget):
-    """Frameless-window caption strip; drag moves, double-click maximizes."""
+    """Frameless-window caption strip; drag moves, double-click maximizes.
 
-    def __init__(self, window: QWidget) -> None:
+    ``controls`` selects which caption buttons exist; they always render in
+    Windows order (Minimize, Maximize, Close). Without a Maximize button the
+    bar is a dialog caption: double-click is inert and the window is never
+    maximized by the bar.
+    """
+
+    def __init__(
+        self,
+        window: QWidget,
+        *,
+        title: str = APP_TITLE,
+        controls: Sequence[str] = WINDOW_CONTROLS,
+    ) -> None:
         super().__init__(window)
-        self._window = window
+        unknown = sorted(set(controls) - set(WINDOW_CONTROLS))
+        if unknown:
+            raise ValueError(f"unknown caption controls: {unknown}")
+        self._window_ref = weakref.ref(window)
         self.setObjectName("titleBar")
         self.setFixedHeight(theme.TITLE_BAR_H)
         self.setMouseTracking(True)
@@ -104,26 +132,47 @@ class TitleBar(QWidget):
             self.icon_label.setPixmap(pixmap)
         row.addWidget(self.icon_label)
 
-        self.title_label = QLabel("WinPodX")
+        self.title_label = QLabel(title)
         self.title_label.setObjectName("titleBarText")
         self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         row.addWidget(self.title_label)
         row.addStretch(1)
 
-        self.btn_minimize = _CaptionButton("minimize", self)
-        self.btn_maximize = _CaptionButton("maximize", self)
-        self.btn_close = _CaptionButton("close", self)
-        self.btn_minimize.setAccessibleName(tr("Minimize"))
-        self.btn_maximize.setAccessibleName(tr("Maximize"))
-        self.btn_close.setAccessibleName(tr("Close"))
-        self.btn_minimize.clicked.connect(lambda: self._window.showMinimized())
-        self.btn_maximize.clicked.connect(self._toggle_maximized)
-        self.btn_close.clicked.connect(lambda: self._window.close())
-        for btn in (self.btn_minimize, self.btn_maximize, self.btn_close):
+        # Windows order is fixed; ``controls`` only selects which exist.
+        specs = (
+            ("minimize", tr("Minimize"), self._minimize),
+            ("maximize", tr("Maximize"), self._toggle_maximized),
+            ("close", tr("Close"), self._close),
+        )
+        by_kind: dict[str, _CaptionButton] = {}
+        for kind, name, action in specs:
+            if kind not in controls:
+                continue
+            btn = _CaptionButton(kind, self)
+            btn.setAccessibleName(name)
+            btn.clicked.connect(action)
             row.addWidget(btn)
+            by_kind[kind] = btn
+        self._buttons: tuple[_CaptionButton, ...] = tuple(by_kind.values())
+        self.btn_minimize: _CaptionButton | None = by_kind.get("minimize")
+        self.btn_maximize: _CaptionButton | None = by_kind.get("maximize")
+        self.btn_close: _CaptionButton | None = by_kind.get("close")
 
         window.installEventFilter(self)
         self.restyle()
+
+    @property
+    def _window(self) -> QWidget:
+        window = self._window_ref()
+        if window is None:
+            raise RuntimeError("title-bar window no longer exists")
+        return window
+
+    def _minimize(self) -> None:
+        self._window.showMinimized()
+
+    def _close(self) -> None:
+        self._window.close()
 
     def _toggle_maximized(self) -> None:
         if self._window.isMaximized():
@@ -133,6 +182,8 @@ class TitleBar(QWidget):
         self._sync_maximize_glyph()
 
     def _sync_maximize_glyph(self) -> None:
+        if self.btn_maximize is None:
+            return
         self.btn_maximize.setProperty("restore", bool(self._window.isMaximized()))
         self.btn_maximize.setAccessibleName(
             tr("Restore") if self._window.isMaximized() else tr("Maximize")
@@ -140,7 +191,12 @@ class TitleBar(QWidget):
         self.btn_maximize.update()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
-        if watched is self._window and event.type() == QEvent.Type.WindowStateChange:
+        window = self._window_ref()
+        if (
+            window is not None
+            and watched is window
+            and event.type() == QEvent.Type.WindowStateChange
+        ):
             self._sync_maximize_glyph()
         return False
 
@@ -153,7 +209,7 @@ class TitleBar(QWidget):
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt signature
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton and self.btn_maximize is not None:
             self._toggle_maximized()
             event.accept()
             return
@@ -165,5 +221,5 @@ class TitleBar(QWidget):
             f"QLabel#titleBarText {{ background: transparent; color: {theme.C.TEXT}; "
             f"font-size: {theme.FONT_CAPTION}px; }}"
         )
-        for btn in (self.btn_minimize, self.btn_maximize, self.btn_close):
+        for btn in self._buttons:
             btn.update()

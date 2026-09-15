@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 from winpodx.core.config import Config
 from winpodx.core.i18n import tr
 from winpodx.gui import theme
+from winpodx.gui._dialog_chrome import ChromeDialog
 from winpodx.gui._main_window_maintenance_cards import MaintenanceCardsMixin
 from winpodx.gui._main_window_secondary_style import (
     make_named_settings_group,
@@ -71,11 +72,10 @@ def _confirm_with_callout(
     visible *before* the user clicks Yes, rather than buried in a plain
     QMessageBox body. Returns True only when the user confirms.
     """
-    dlg = QDialog(parent)
-    dlg.setWindowTitle(title)
+    dlg = ChromeDialog(parent, title=title)
     dlg.setModal(True)
     dlg.setMinimumWidth(420)
-    lay = QVBoxLayout(dlg)
+    lay = QVBoxLayout(dlg.content_widget)
     lay.setContentsMargins(20, 18, 20, 16)
     lay.setSpacing(12)
 

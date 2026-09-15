@@ -15,7 +15,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
-    QDialog,
     QDialogButtonBox,
     QFrame,
     QHBoxLayout,
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (
 from winpodx.core.debloat import DebloatCatalog
 from winpodx.core.i18n import tr
 from winpodx.gui import theme
+from winpodx.gui._dialog_chrome import ChromeDialog
 from winpodx.gui.theme import (
     CONTROL_HEIGHT_W11,
     SPACE_L,
@@ -65,7 +65,7 @@ _PRESET_DESCRIPTIONS = {
 }
 
 
-class DebloatPickerDialog(QDialog):
+class DebloatPickerDialog(ChromeDialog):
     """Modal item picker driven by a ``DebloatCatalog``.
 
     Usage:
@@ -91,7 +91,7 @@ class DebloatPickerDialog(QDialog):
         initial_preset: str = "normal",
         parent: QWidget | None = None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(parent, title=tr("Debloat picker"))
         self._catalog = catalog
         self._suppress_recompute = False
         self._run_undo = False
@@ -102,15 +102,15 @@ class DebloatPickerDialog(QDialog):
         # the CLI's --list output prints).
         self._item_boxes: dict[str, QCheckBox] = {}
 
-        self.setWindowTitle(tr("Debloat picker"))
         self.setMinimumWidth(560)
         # Open roomy enough to show the preset row + several catalog items at
         # once instead of a cramped default (#550); still resizable + scrolls.
-        self.resize(760, 720)
+        # The shared caption stacks on top of that body room, never inside it.
+        self.resize(760, 720 + self.chrome_height)
         self.setModal(True)
         self.setStyleSheet(theme.DIALOG + theme.CHECKBOX + theme.RADIO + theme.SCROLL_AREA)
 
-        outer = QVBoxLayout(self)
+        outer = QVBoxLayout(self.content_widget)
         outer.setContentsMargins(20, 18, 20, 18)
         outer.setSpacing(SPACE_M)
 

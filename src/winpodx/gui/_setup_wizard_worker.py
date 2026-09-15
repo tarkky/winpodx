@@ -60,7 +60,10 @@ class SetupWorker(QObject):
         cfg = Config.load()
         apply_setup_presets(cfg, self._args)
         cfg.save()
-        handle_pod(argparse.Namespace(pod_command="reset", yes=True, redownload_iso=False))
+        handle_pod(
+            argparse.Namespace(pod_command="reset", yes=True, redownload_iso=False),
+            on_progress=self._on_progress,
+        )
 
 
 class PkexecWorker(QObject):

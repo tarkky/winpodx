@@ -12,7 +12,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
+from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
+from PySide6.QtGui import QWheelEvent  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton, QWidget  # noqa: E402
 
 from winpodx.core.config import Config  # noqa: E402
 from winpodx.setup_wizard.host_state import HostState  # noqa: E402
@@ -76,6 +78,42 @@ def _wait_until(pred, timeout: float = 3.0) -> None:
             app.processEvents()
         time.sleep(0.01)
     raise AssertionError("timed out waiting for wizard state")
+
+
+def _wheel(widget: QWidget, delta_y: int) -> None:
+    """Deliver one mouse-wheel notch (``delta_y`` in eighths of a degree) to ``widget``."""
+    center = QPointF(widget.rect().center())
+    event = QWheelEvent(
+        center,
+        widget.mapToGlobal(center),
+        QPoint(0, 0),
+        QPoint(0, delta_y),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(widget, event)
+
+
+def _config_page():
+    from winpodx.gui._setup_wizard_config import ConfigurationPage
+    from winpodx.gui._setup_wizard_model import SetupAnswers
+
+    return ConfigurationPage(
+        SetupAnswers(
+            win_version="11",
+            language="English",
+            region="en-001",
+            keyboard="en-US",
+            timezone="UTC",
+            cpu_cores=4,
+            ram_gb=8,
+            disk_size="64G",
+            rdp_user="Docker",
+            tuning_profile="auto",
+        )
+    )
 
 
 @pytest.fixture
@@ -315,3 +353,43 @@ def test_reinstall_prefills_from_config(monkeypatch: pytest.MonkeyPatch) -> None
     assert answers.rdp_user == "Park"
     assert dlg.skip_btn.isVisible() is False
     dlg.close()
+
+
+def test_unfocused_wheel_leaves_combo_value_unchanged() -> None:
+    _ensure_qapp()
+    page = _config_page()
+    assert page._disk.hasFocus() is False
+    assert page._disk.currentData() == "64G"
+
+    _wheel(page._disk, -120)
+
+    assert page._disk.currentData() == "64G"
+    assert page.answers().disk_size == "64G"
+
+
+def test_unfocused_wheel_leaves_spin_value_unchanged() -> None:
+    _ensure_qapp()
+    page = _config_page()
+    assert page._cpu.hasFocus() is False
+    assert page._cpu.value() == 4
+
+    _wheel(page._cpu, 120)
+
+    assert page._cpu.value() == 4
+    assert page.answers().cpu_cores == 4
+
+
+def test_focused_wheel_still_steps_spin_value() -> None:
+    app = _ensure_qapp()
+    page = _config_page()
+    page.show()
+    page.activateWindow()
+    app.processEvents()
+    page._cpu.setFocus()
+    app.processEvents()
+    assert page._cpu.hasFocus() is True
+
+    _wheel(page._cpu, 120)
+
+    assert page._cpu.value() == 5
+    page.close()

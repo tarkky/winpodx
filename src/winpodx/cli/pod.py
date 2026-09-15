@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import re
 import sys
 import threading
@@ -12,8 +13,12 @@ from collections.abc import Callable
 from winpodx.cli.main import _emit_deprecation as _deprecate_pod
 from winpodx.core.i18n import tr
 
+log = logging.getLogger(__name__)
 
-def handle_pod(args: argparse.Namespace) -> None:
+
+def handle_pod(
+    args: argparse.Namespace, *, on_progress: Callable[[str, str], None] | None = None
+) -> None:
     """Route pod subcommands.
 
     Lifecycle subcommands (start / stop / status / restart / recreate /
@@ -38,11 +43,13 @@ def handle_pod(args: argparse.Namespace) -> None:
         _recreate(
             wipe_storage=getattr(args, "wipe_storage", False) or keep_iso,
             keep_iso=keep_iso,
+            on_progress=on_progress,
         )
     elif cmd == "reset":
         _reset(
             redownload_iso=getattr(args, "redownload_iso", False),
             assume_yes=getattr(args, "yes", False),
+            on_progress=on_progress,
         )
     elif cmd == "wait-ready":
         _wait_ready(args.timeout, getattr(args, "logs", False), getattr(args, "verbose", False))
@@ -717,7 +724,12 @@ def _restart() -> None:
         sys.exit(1)
 
 
-def _reset(*, redownload_iso: bool = False, assume_yes: bool = False) -> None:
+def _reset(
+    *,
+    redownload_iso: bool = False,
+    assume_yes: bool = False,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> None:
     """Start the guest over: wipe the disk, reinstall, re-run provisioning.
 
     ``recreate --wipe-storage`` already destroys the disk, but it stops once
@@ -730,48 +742,69 @@ def _reset(*, redownload_iso: bool = False, assume_yes: bool = False) -> None:
     The ISO is kept by default; re-downloading 5-8 GB is rarely what a reset
     is for.
     """
+
+    def _report(detail: str) -> str:
+        if on_progress is not None:
+            try:
+                on_progress("reset", detail)
+            except Exception:  # noqa: BLE001 — progress must never interrupt reset
+                log.debug("Reset progress callback failed", exc_info=True)
+        return detail
+
     if not assume_yes:
         print(
-            tr(
-                "This DESTROYS the Windows disk and everything installed in it, "
-                "then reinstalls Windows and re-runs provisioning.\n"
-                "Your winpodx settings and app profiles are kept.\n"
-                "Type 'RESET' to confirm: "
+            _report(
+                tr(
+                    "This DESTROYS the Windows disk and everything installed in it, "
+                    "then reinstalls Windows and re-runs provisioning.\n"
+                    "Your winpodx settings and app profiles are kept.\n"
+                    "Type 'RESET' to confirm: "
+                )
             ),
             end="",
             flush=True,
         )
         try:
             if input().strip() != "RESET":
-                print(tr("Aborted (no confirmation)."))
+                print(_report(tr("Aborted (no confirmation).")))
                 return
         except (EOFError, KeyboardInterrupt):
-            print(tr("\nAborted."))
+            print(_report(tr("\nAborted.")))
             return
 
     # keep_iso is the inverse of the user-facing --redownload-iso; _recreate
     # takes the confirmation it would otherwise prompt for as already given.
-    _recreate(wipe_storage=True, keep_iso=not redownload_iso, assume_yes=True)
+    _recreate(
+        wipe_storage=True, keep_iso=not redownload_iso, assume_yes=True, on_progress=on_progress
+    )
 
-    print(tr("\nRe-running provisioning on the fresh guest..."))
+    print(_report(tr("\nRe-running provisioning on the fresh guest...")))
     from winpodx.cli.main import _cmd_provision
 
     args = argparse.Namespace(retries=5, timeout=3600, logs=False, verbose=False)
-    rc = _cmd_provision(args)
+    rc = _cmd_provision(args, on_progress=on_progress)
     if rc == 0:
-        print(tr("Reset complete. The guest is provisioned and ready."))
+        print(_report(tr("Reset complete. The guest is provisioned and ready.")))
     else:
         print(
-            tr(
-                "The guest was reinstalled but provisioning did not finish. "
-                "Run 'winpodx provision' to retry, or 'winpodx doctor' to see "
-                "what is missing."
+            _report(
+                tr(
+                    "The guest was reinstalled but provisioning did not finish. "
+                    "Run 'winpodx provision' to retry, or 'winpodx doctor' to see "
+                    "what is missing."
+                )
             ),
             file=sys.stderr,
         )
 
 
-def _recreate(*, wipe_storage: bool, keep_iso: bool = False, assume_yes: bool = False) -> None:
+def _recreate(
+    *,
+    wipe_storage: bool,
+    keep_iso: bool = False,
+    assume_yes: bool = False,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> None:
     """Regenerate compose.yaml + destroy and re-create the container (#254).
 
     Differs from ``_restart`` in two ways:
@@ -791,6 +824,14 @@ def _recreate(*, wipe_storage: bool, keep_iso: bool = False, assume_yes: bool = 
     from winpodx.core.pod import PodState, start_pod, stop_pod
     from winpodx.core.pod.disguise import DisguiseImageError, validate_disguise_image
 
+    def _report(detail: str) -> str:
+        if on_progress is not None:
+            try:
+                on_progress("recreate", detail)
+            except Exception:  # noqa: BLE001 — progress must never interrupt recreate
+                log.debug("Recreate progress callback failed", exc_info=True)
+        return detail
+
     cfg = Config.load()
 
     # Validate BEFORE anything destructive: the stop/wipe below used to run
@@ -798,7 +839,7 @@ def _recreate(*, wipe_storage: bool, keep_iso: bool = False, assume_yes: bool = 
     try:
         validate_disguise_image(cfg)
     except DisguiseImageError as e:
-        print(tr("Cannot recreate: {error}").format(error=e), file=sys.stderr)
+        print(_report(tr("Cannot recreate: {error}").format(error=e)), file=sys.stderr)
         sys.exit(1)
 
     if wipe_storage:
@@ -822,64 +863,73 @@ def _recreate(*, wipe_storage: bool, keep_iso: bool = False, assume_yes: bool = 
         if assume_yes:
             # `pod reset` already took an explicit RESET confirmation; asking
             # twice for the same destruction just trains people to type past it.
-            print(tr("Wiping the Windows disk (confirmed)."))
+            print(_report(tr("Wiping the Windows disk (confirmed).")))
         else:
-            print(warn_msg, end="", flush=True)
+            print(_report(warn_msg), end="", flush=True)
             try:
                 answer = input().strip()
             except EOFError:
                 answer = ""
             if answer != "WIPE":
-                print(tr("Aborted (no confirmation)."))
+                print(_report(tr("Aborted (no confirmation).")))
                 sys.exit(2)
 
-    print(tr("Stopping pod..."))
+    print(_report(tr("Stopping pod...")))
     stop_pod(cfg)
 
     if wipe_storage:
         _wipe_pod_storage(cfg, keep_iso=keep_iso)
 
-    print(tr("Regenerating compose.yaml from current config..."))
+    print(_report(tr("Regenerating compose.yaml from current config...")))
     try:
         generate_compose(cfg)
     except Exception as e:  # noqa: BLE001
-        print(tr("Failed to regenerate compose.yaml: {error}").format(error=e), file=sys.stderr)
+        print(
+            _report(tr("Failed to regenerate compose.yaml: {error}").format(error=e)),
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    print(tr("Starting pod with new compose..."))
+    print(_report(tr("Starting pod with new compose...")))
     status = start_pod(cfg)
 
     if status.state in (PodState.RUNNING, PodState.STARTING):
         if wipe_storage and keep_iso:
             print(
-                tr(
-                    "Pod recreated for a fresh install, reusing the cached ISO "
-                    "(no Microsoft re-download). Windows reinstall will take "
-                    "~5-10 minutes (Sysprep + OEM apply); watch progress with "
-                    "`winpodx pod wait-ready --logs`."
+                _report(
+                    tr(
+                        "Pod recreated for a fresh install, reusing the cached ISO "
+                        "(no Microsoft re-download). Windows reinstall will take "
+                        "~5-10 minutes (Sysprep + OEM apply); watch progress with "
+                        "`winpodx pod wait-ready --logs`."
+                    )
                 )
             )
         elif wipe_storage:
             print(
-                tr(
-                    "Pod recreated with fresh storage. Windows reinstall will "
-                    "take ~5-10 minutes (ISO download + Sysprep + OEM apply); "
-                    "watch progress with `winpodx pod wait-ready --logs`."
+                _report(
+                    tr(
+                        "Pod recreated with fresh storage. Windows reinstall will "
+                        "take ~5-10 minutes (ISO download + Sysprep + OEM apply); "
+                        "watch progress with `winpodx pod wait-ready --logs`."
+                    )
                 )
             )
         else:
             print(
-                tr(
-                    "Pod recreated. Container picked up the new compose; "
-                    "note that dockur applies language / region / keyboard / "
-                    "edition only on the initial Windows install, so those "
-                    "specific knobs require --wipe-storage to actually reach "
-                    "the guest. Timezone, backend, and runtime knobs apply "
-                    "without a wipe."
+                _report(
+                    tr(
+                        "Pod recreated. Container picked up the new compose; "
+                        "note that dockur applies language / region / keyboard / "
+                        "edition only on the initial Windows install, so those "
+                        "specific knobs require --wipe-storage to actually reach "
+                        "the guest. Timezone, backend, and runtime knobs apply "
+                        "without a wipe."
+                    )
                 )
             )
     else:
-        print(tr("Failed to start: {error}").format(error=status.error), file=sys.stderr)
+        print(_report(tr("Failed to start: {error}").format(error=status.error)), file=sys.stderr)
         sys.exit(1)
 
 

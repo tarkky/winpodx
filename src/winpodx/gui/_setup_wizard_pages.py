@@ -180,6 +180,7 @@ class InstallPage(QWidget):
             on_cancel=self._on_cancel,
             cfg=self._cfg,
             phases=_INSTALL_CHECKLIST,
+            chrome=False,
         )
         progress.setWindowFlags(Qt.WindowType.Widget)
         progress.setWindowModality(Qt.WindowModality.NonModal)

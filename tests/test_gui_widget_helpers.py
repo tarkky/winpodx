@@ -152,7 +152,7 @@ def test_busy_dialog_exposes_message_progress_hint_and_cancel_button(qapp) -> No
     )
     dialog.on_cancel(lambda: cancelled.append(True))
 
-    button = dialog.findChild(QPushButton)
+    button = dialog._cancel_btn
     progress = dialog.findChild(QProgressBar)
     labels = [label.text() for label in dialog.findChildren(QLabel)]
     button.click()
@@ -174,7 +174,7 @@ def test_busy_dialog_updates_message_and_finish_accepts(qapp) -> None:
 
     assert dialog._msg.text() == "Second message"
     assert dialog.result() == dialog.DialogCode.Accepted
-    assert dialog.findChildren(QPushButton) == []
+    assert dialog.content_widget.findChildren(QPushButton) == []
 
 
 def test_warning_callout_renders_text_and_danger_accent(qapp) -> None:

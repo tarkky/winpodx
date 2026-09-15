@@ -538,7 +538,9 @@ class TestProvision:
         assert captured["with_reverse_open"] is False
         assert captured["with_discovery"] is True
         assert captured["retries"] == 3
-        wait_ready.assert_called_once_with(42, show_logs=True, verbose=True)
+        wait_ready.assert_called_once_with(
+            42, show_logs=True, verbose=True, on_log=wait_ready.call_args.kwargs["on_log"]
+        )
         output = capsys.readouterr()
         assert "[agent] ready" in output.err
         assert "Provisioning complete." in output.out
@@ -635,6 +637,50 @@ class TestProvision:
         monkeypatch.setattr(provisioner, "finish_provisioning", finish)
 
         assert main._cmd_provision(self._args()) == 4
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_provision_progress_forwards_stages_and_live_logs_without_duplicate_output(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], raises: bool
+) -> None:
+    # Given: real CLI orchestration with isolated provisioner and wait boundaries.
+    from winpodx.cli import pod
+    from winpodx.core.config import Config
+
+    cfg = Config()
+    cfg.pod.backend = "podman"
+    _patch_config(monkeypatch, cfg)
+    finish = Mock(return_value={"wait_ready": "ok"})
+    wait_ready = Mock()
+    monkeypatch.setattr("winpodx.core.provisioner.finish_provisioning", finish)
+    monkeypatch.setattr(pod, "_wait_ready", wait_ready)
+    events: list[tuple[str, str]] = []
+
+    def observe(stage: str, detail: str) -> None:
+        events.append((stage, detail))
+        if raises:
+            raise RuntimeError("observer unavailable")
+
+    # When: the supplied stage and wait callbacks are exercised.
+    result = main._cmd_provision(argparse.Namespace(verbose=True), on_progress=observe)
+    callbacks = finish.call_args.kwargs
+    callbacks["on_progress"]("discovery", "scanning guest")
+    assert callbacks["wait_fn"](cfg, 81) is True
+    on_log = wait_ready.call_args.kwargs["on_log"]
+    on_log("[1/4] Container running")
+    on_log("Downloading Windows ISO: 25%")
+
+    # Then: wait logs are observer-only; CLI stages remain on stderr exactly once.
+    assert result == 0
+    assert events == [
+        ("discovery", "scanning guest"),
+        ("wait_ready", "[1/4] Container running"),
+        ("wait_ready", "Downloading Windows ISO: 25%"),
+    ]
+    wait_ready.assert_called_once_with(81, show_logs=True, verbose=True, on_log=on_log)
+    output = capsys.readouterr()
+    assert output.out == "Provisioning complete.\n  wait_ready: ok\n"
+    assert output.err == "  [discovery] scanning guest\n"
 
 
 class TestDebloat:

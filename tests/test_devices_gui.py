@@ -10,13 +10,23 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import Qt, QTimer  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QPushButton,
+    QWidget,
+)
 
 import winpodx.gui._main_window_devices as devices_mod  # noqa: E402
 import winpodx.gui._main_window_devices_cards as devices_cards  # noqa: E402
 from winpodx.cli import device as DC  # noqa: E402
 from winpodx.core import devices as D  # noqa: E402
 from winpodx.core.config import Config  # noqa: E402
+from winpodx.core.i18n import tr  # noqa: E402
+from winpodx.gui import theme  # noqa: E402
+from winpodx.gui._dialog_chrome import ChromeDialog  # noqa: E402
 from winpodx.gui._main_window_devices import DevicesMixin  # noqa: E402
 
 
@@ -178,3 +188,120 @@ def test_pci_attach_requires_confirmation(host, monkeypatch):
     monkeypatch.setattr(host, "_confirm_risky_pci", lambda host_dev, safety: True)
     host._on_attach(D.HostDevice(dtype="pci", did="0000:01:00.0", label="GPU", pci_class="03"))
     assert host._cfg.pod.devices == ["pci|0000:01:00.0|GPU"]
+
+
+# ----- the risky-PCI confirm dialog itself --------------------------------
+
+
+class _ConfirmHost(DevicesMixin, QWidget):
+    """``host`` above is a plain object; a real dialog needs a QWidget parent."""
+
+
+_RISKY_GPU = D.HostDevice(
+    dtype="pci", did="0000:01:00.0", label="GPU", pci_class="03", iommu_group="15"
+)
+_UNSAFE = D.Safety(safe=False, reasons=["boot GPU", "IOMMU group 15 is shared"])
+
+
+@pytest.fixture()
+def confirm_host(qapp, monkeypatch):
+    monkeypatch.setattr(D, "list_host_pci", lambda: [])
+    h = _ConfirmHost()
+    yield h
+    h.deleteLater()
+
+
+@pytest.fixture()
+def driven_dialog(monkeypatch):
+    """``act`` presses a real control from inside ``exec()``'s nested loop.
+
+    The parented 4s guard rejects a dialog nothing closed, so a regression
+    fails the test instead of hanging the suite.
+    """
+    monkeypatch.delenv("WINPODX_NATIVE_TITLEBAR", raising=False)
+
+    class _Driven(ChromeDialog):
+        seen: list = []
+
+        @staticmethod
+        def act(dlg) -> None:
+            dlg.reject()
+
+        def exec(self):  # noqa: A003 - mirrors QDialog.exec
+            type(self).seen.append(self)
+            QTimer.singleShot(0, lambda: type(self).act(self))
+            guard = QTimer(self)
+            guard.setSingleShot(True)
+            guard.timeout.connect(self.reject)
+            guard.start(4000)
+            try:
+                return super().exec()
+            finally:
+                guard.stop()
+
+    monkeypatch.setattr(devices_mod, "ChromeDialog", _Driven)
+    return _Driven
+
+
+def _ok_button(dlg: QDialog) -> QPushButton:
+    return dlg.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok)
+
+
+def _cancel_button(dlg: QDialog) -> QPushButton:
+    return dlg.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Cancel)
+
+
+def test_confirm_risky_pci_wears_shared_chrome_and_pass_through_confirms(
+    confirm_host, driven_dialog
+):
+    driven_dialog.act = staticmethod(lambda dlg: _ok_button(dlg).click())
+
+    assert confirm_host._confirm_risky_pci(_RISKY_GPU, _UNSAFE) is True
+
+    (dlg,) = driven_dialog.seen
+    assert isinstance(dlg, ChromeDialog)
+    assert dlg.parent() is confirm_host
+    assert dlg.isModal()
+    assert dlg.minimumWidth() == 460
+    assert dlg.windowTitle() == tr("Risky passthrough")
+    assert dlg.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert dlg.title_bar.title_label.text() == tr("Risky passthrough")
+    assert dlg.title_bar.btn_minimize is None and dlg.title_bar.btn_maximize is None
+    assert dlg.title_bar.btn_close is not None
+    assert dlg.chrome_height == theme.TITLE_BAR_H
+    assert dlg.layout().itemAt(0).widget() is dlg.title_bar
+    assert dlg.layout().itemAt(1).widget() is dlg.content_widget
+
+    body = dlg.content_widget.layout()
+    assert body is not None
+    assert body.contentsMargins().left() == theme.SPACE_L
+    assert body.spacing() == theme.SPACE_M
+    callout = body.itemAt(0).widget()
+    assert callout.objectName() == "winpodxCallout"
+    assert callout.parentWidget() is dlg.content_widget
+    reasons = body.itemAt(1).widget()
+    assert "• boot GPU" in reasons.text()
+    assert "• IOMMU group 15 is shared" in reasons.text()
+    assert _ok_button(dlg).text() == tr("Pass through anyway")
+    assert _ok_button(dlg).parentWidget().parentWidget() is dlg.content_widget
+    assert dlg.result() == QDialog.DialogCode.Accepted
+    assert not dlg.isVisible()
+
+
+def test_confirm_risky_pci_cancel_declines(confirm_host, driven_dialog):
+    driven_dialog.act = staticmethod(lambda dlg: _cancel_button(dlg).click())
+
+    assert confirm_host._confirm_risky_pci(_RISKY_GPU, _UNSAFE) is False
+
+    (dlg,) = driven_dialog.seen
+    assert dlg.result() == QDialog.DialogCode.Rejected
+
+
+def test_confirm_risky_pci_caption_close_declines(confirm_host, driven_dialog):
+    driven_dialog.act = staticmethod(lambda dlg: dlg.title_bar.btn_close.click())
+
+    assert confirm_host._confirm_risky_pci(_RISKY_GPU, _UNSAFE) is False
+
+    (dlg,) = driven_dialog.seen
+    assert dlg.result() == QDialog.DialogCode.Rejected
+    assert not dlg.isVisible()
