@@ -44,4 +44,8 @@ if [ ${#PY_BIN_GLOB[@]} -eq 0 ]; then
     exit 127
 fi
 
+if [ "$#" -eq 0 ]; then
+    set -- gui
+fi
+
 exec "${PY_BIN_GLOB[0]}" "$@"

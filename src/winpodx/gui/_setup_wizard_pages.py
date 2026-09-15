@@ -145,6 +145,14 @@ _STAGE_TO_ROW: dict[str, str] = {
     "reverse_open": "wiz_complete",
 }
 
+# Stages handle_pod(reset) streams around finish_provisioning. They own no
+# checklist row -- they are not provisioning phases -- so they get a human
+# header instead of leaving the misleading "Phase 1 / 5" caption standing.
+_STAGE_HEADERS: dict[str, str] = {
+    "recreate": "Preparing Windows",
+    "reset": "Reinstalling Windows",
+}
+
 # Smallest live log the embedded page keeps before the wizard has to scroll.
 _LOG_MIN_LINES = 4
 # Qt's QWIDGETSIZE_MAX (not exported by PySide6): lifts a setFixedHeight cap.
@@ -187,10 +195,6 @@ class InstallPage(QWidget):
         progress.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._root.addWidget(progress)
         self.progress = progress
-        # First run has cfg=None so the podman tail can't start, but the log
-        # panel must stay visible to carry the streamed stage details below.
-        progress.pod_log_toggle.setChecked(True)
-        progress.pod_log_view.setVisible(True)
         # Standalone, the dialog's fixed 210 px log is what sizes the dialog.
         # Embedded, the page is sized by the wizard's scroll viewport, so the
         # log keeps a readable floor and absorbs every spare pixel below the
@@ -215,10 +219,13 @@ class InstallPage(QWidget):
         # detail to the visible log and advances the checklist by the stage map.
         if self.progress is None:
             return
-        row = _STAGE_TO_ROW.get(stage)
         self.progress.append_pod_log_line(f"[{stage}] {detail}" if detail else f"[{stage}]")
+        row = _STAGE_TO_ROW.get(stage)
         if row is not None:
             self.progress.on_phase(row, detail)
+            return
+        header = _STAGE_HEADERS.get(stage)
+        self.progress.on_note(tr(header) if header else "", detail)
 
     def finish(self, success: bool, error: str) -> None:
         """Tick or freeze the checklist from the worker result."""

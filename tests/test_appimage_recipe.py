@@ -214,3 +214,117 @@ def test_slim_actually_drops_the_heavy_unused_modules():
             f"slim-pyside6.sh no longer drops {heavy!r} -- the AppImage will "
             "bloat back up. It's unused by winpodx; keep it on DROP_MODULES."
         )
+
+
+# --- Zero-arg AppImage launch -> GUI ------------------------------------
+# A double-clicked AppImage runs its AppRun with NO arguments. Today both
+# AppRun templates forward "$@" straight to the CLI, so a bare launch prints
+# `winpodx --help` to a terminal nobody sees. The approved behaviour maps the
+# zero-argument case to the `gui` subcommand *immediately before* the existing
+# exec, while leaving any explicit argument list untouched (so
+# `./winpodx.AppImage setup` still runs `setup`). These tests read the AppRun
+# text statically -- the AppImage is never built here -- and assert on the
+# shell control flow strongly enough to tell a zero-arg launch apart from an
+# explicit-arg passthrough.
+
+# The CI-shipped AppRun template is a heredoc inside the publish workflow.
+LOCAL_APPRUN = REPO_ROOT / "packaging" / "appimage" / "recipe" / "entrypoint.sh"
+RECIPE_DESKTOP = REPO_ROOT / "packaging" / "appimage" / "recipe" / "winpodx.desktop"
+
+
+def _workflow_apprun_body() -> str:
+    """Return the AppRun heredoc body written by appimage-publish.yml.
+
+    The workflow emits it via ``cat > AppDir/AppRun <<'APPRUN' ... APPRUN``.
+    We slice between the heredoc open and its terminator so the assertions
+    scan only the script that ends up executable in the AppImage.
+    """
+    text = _read(WORKFLOW)
+    match = re.search(
+        r"cat\s*>\s*AppDir/AppRun\s*<<'APPRUN'\n(?P<body>.*?)\n\s*APPRUN\b",
+        text,
+        re.DOTALL,
+    )
+    assert match is not None, "AppRun heredoc (<<'APPRUN' ... APPRUN) not found in workflow"
+    return match.group("body")
+
+
+def _maps_zero_args_to_gui_before_exec(body: str) -> bool:
+    """True when the script injects ``gui`` for the zero-argument case and
+    still forwards ``"$@"`` to the final exec.
+
+    Distinguishes zero-arg from explicit-arg handling by requiring BOTH:
+
+    * a shell test on the argument count being zero (``$#`` compared to 0),
+      which is what makes the mapping apply only to a bare launch, appearing
+      before the exec line; and
+    * the exec still forwarding ``"$@"`` verbatim, which is what leaves an
+      explicit argument list untouched.
+
+    A template that unconditionally rewrote the args (breaking explicit
+    passthrough) would fail the second half; one that never tests ``$#``
+    (today's main) fails the first.
+    """
+    exec_match = re.search(r'^\s*exec\b.*"\$@".*$', body, re.MULTILINE)
+    if exec_match is None:
+        return False
+    before_exec = body[: exec_match.start()]
+    # ``$#`` compared against 0 in either order, e.g. `[ "$#" -eq 0 ]` or
+    # `[ $# = 0 ]` or `(( $# == 0 ))`. The `gui` token must be the injected
+    # default (``set -- gui`` is the POSIX-sh idiom).
+    quoted_argc = r'["\']?\$#["\']?'
+    quoted_zero = r'["\']?0["\']?'
+    tests_zero_argc = re.search(
+        rf"{quoted_argc}\s*(?:-eq|==|=)\s*{quoted_zero}"
+        rf"|{quoted_zero}\s*(?:-eq|==|=)\s*{quoted_argc}",
+        before_exec,
+    )
+    injects_gui = re.search(r"set\s+--\s+gui\b", before_exec)
+    return bool(tests_zero_argc and injects_gui)
+
+
+def test_workflow_apprun_maps_zero_args_to_gui_keeping_explicit_args():
+    body = _workflow_apprun_body()
+    # Sanity: the template still execs through the bundled interpreter with a
+    # verbatim "$@" (explicit-arg passthrough is preserved).
+    assert re.search(r'^\s*exec\b.*"\$@".*$', body, re.MULTILINE), (
+        'appimage-publish.yml AppRun no longer forwards "$@"; explicit arguments would be dropped.'
+    )
+    assert _maps_zero_args_to_gui_before_exec(body), (
+        "appimage-publish.yml AppRun does not map a zero-argument launch to "
+        "the `gui` subcommand before its exec. A double-clicked AppImage "
+        "prints CLI help instead of opening the GUI. Add a `$#`-is-zero guard "
+        "that does `set -- gui` ahead of the existing "
+        '`exec ... -m winpodx "$@"` line.'
+    )
+
+
+def test_local_recipe_entrypoint_maps_zero_args_to_gui_keeping_explicit_args():
+    body = _read(LOCAL_APPRUN)
+    assert re.search(r'^\s*exec\b.*"\$@".*$', body, re.MULTILINE), (
+        'packaging/appimage/recipe/entrypoint.sh no longer forwards "$@"; '
+        "explicit arguments would be dropped."
+    )
+    assert _maps_zero_args_to_gui_before_exec(body), (
+        "packaging/appimage/recipe/entrypoint.sh does not map a zero-argument "
+        "launch to the `gui` subcommand before its exec. A double-clicked "
+        "local-build AppImage prints CLI help instead of opening the GUI. Add "
+        "a `$#`-is-zero guard that does `set -- gui` ahead of the existing "
+        '`exec "${PY_BIN_GLOB[0]}" "$@"` line.'
+    )
+
+
+def test_recipe_desktop_launches_the_gui_not_the_full_desktop():
+    """The embedded .desktop must open the WinPodX GUI, not a full Windows
+    desktop session. ``Exec=winpodx app run desktop`` boots a whole Windows
+    desktop on a bare click; the approved target is ``winpodx gui``."""
+    text = _read(RECIPE_DESKTOP)
+    exec_line = next(
+        (line for line in text.splitlines() if line.startswith("Exec=")),
+        "",
+    )
+    assert exec_line == "Exec=winpodx gui", (
+        "packaging/appimage/recipe/winpodx.desktop Exec is "
+        f"{exec_line!r}; it must be 'Exec=winpodx gui' so a launched AppImage "
+        "opens the WinPodX GUI rather than a full Windows desktop."
+    )

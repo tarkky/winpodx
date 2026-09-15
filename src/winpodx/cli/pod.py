@@ -878,7 +878,10 @@ def _recreate(
     stop_pod(cfg)
 
     if wipe_storage:
-        _wipe_pod_storage(cfg, keep_iso=keep_iso)
+        if on_progress is None:
+            _wipe_pod_storage(cfg, keep_iso=keep_iso)
+        else:
+            _wipe_pod_storage(cfg, keep_iso=keep_iso, on_progress=on_progress)
 
     print(_report(tr("Regenerating compose.yaml from current config...")))
     try:
@@ -933,7 +936,12 @@ def _recreate(
         sys.exit(1)
 
 
-def _wipe_pod_storage(cfg, *, keep_iso: bool = False) -> None:  # type: ignore[no-untyped-def]
+def _wipe_pod_storage(
+    cfg,
+    *,
+    keep_iso: bool = False,
+    on_progress: Callable[[str, str], None] | None = None,
+) -> None:  # type: ignore[no-untyped-def]
     """Destroy the Windows disk image so dockur re-runs the install.
 
     Two storage regimes (see ``compose._render_storage_blocks``):
@@ -959,6 +967,14 @@ def _wipe_pod_storage(cfg, *, keep_iso: bool = False) -> None:  # type: ignore[n
     import subprocess as sp
     from pathlib import Path
 
+    def _report(detail: str) -> str:
+        if on_progress is not None:
+            try:
+                on_progress("recreate", detail)
+            except Exception:  # noqa: BLE001 — progress must never interrupt wipe
+                log.debug("Wipe progress callback failed", exc_info=True)
+        return detail
+
     raw_storage = (cfg.pod.storage_path or "").strip()
 
     if not raw_storage:
@@ -966,10 +982,12 @@ def _wipe_pod_storage(cfg, *, keep_iso: bool = False) -> None:  # type: ignore[n
         volume_name = "winpodx-data"
         if backend not in ("podman", "docker"):
             print(
-                tr(
-                    "  Backend {backend} has no named-volume wipe path; "
-                    "manually destroy the guest disk and re-run setup."
-                ).format(backend=repr(backend))
+                _report(
+                    tr(
+                        "  Backend {backend} has no named-volume wipe path; "
+                        "manually destroy the guest disk and re-run setup."
+                    ).format(backend=repr(backend))
+                )
             )
             return
         if keep_iso:
@@ -988,42 +1006,52 @@ def _wipe_pod_storage(cfg, *, keep_iso: bool = False) -> None:  # type: ignore[n
             ]
             result = sp.run(cmd, capture_output=True, text=True, timeout=300)
             if result.returncode == 0:
-                print(tr("  Wiped volume {volume} (ISO kept).").format(volume=volume_name))
+                print(_report(tr("  Wiped volume {volume} (ISO kept).").format(volume=volume_name)))
             else:
                 print(
-                    tr("  WARNING: keep-iso wipe returned {rc}: {stderr}").format(
-                        rc=result.returncode, stderr=result.stderr.strip()
+                    _report(
+                        tr("  WARNING: keep-iso wipe returned {rc}: {stderr}").format(
+                            rc=result.returncode, stderr=result.stderr.strip()
+                        )
                     )
                 )
             return
         cmd = [backend, "volume", "rm", "-f", volume_name]
         result = sp.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
-            print(tr("  Removed volume {volume}.").format(volume=volume_name))
+            print(_report(tr("  Removed volume {volume}.").format(volume=volume_name)))
         else:
             stderr = result.stderr.strip()
             if "no such" in stderr.lower():
-                print(tr("  Volume {volume} already absent.").format(volume=volume_name))
+                print(_report(tr("  Volume {volume} already absent.").format(volume=volume_name)))
             else:
                 print(
-                    tr("  WARNING: volume rm returned {rc}: {stderr}").format(
-                        rc=result.returncode, stderr=stderr
+                    _report(
+                        tr("  WARNING: volume rm returned {rc}: {stderr}").format(
+                            rc=result.returncode, stderr=stderr
+                        )
                     )
                 )
         return
 
     bind_path = Path(raw_storage).expanduser()
     if not bind_path.is_dir():
-        print(tr("  Bind-mount path {path} is absent; nothing to wipe.").format(path=bind_path))
+        print(
+            _report(
+                tr("  Bind-mount path {path} is absent; nothing to wipe.").format(path=bind_path)
+            )
+        )
         return
     if keep_iso:
         print(
-            tr("  Wiping bind-mount under {path} (keeping the cached ISO) ...").format(
-                path=bind_path
+            _report(
+                tr("  Wiping bind-mount under {path} (keeping the cached ISO) ...").format(
+                    path=bind_path
+                )
             )
         )
     else:
-        print(tr("  Wiping bind-mount contents under {path} ...").format(path=bind_path))
+        print(_report(tr("  Wiping bind-mount contents under {path} ...").format(path=bind_path)))
     kept_iso = False
     for item in bind_path.iterdir():
         if keep_iso and item.is_file() and item.suffix.lower() == ".iso":
@@ -1035,10 +1063,19 @@ def _wipe_pod_storage(cfg, *, keep_iso: bool = False) -> None:  # type: ignore[n
             else:
                 item.unlink()
         except OSError as e:
-            print(tr("  WARNING: could not remove {item}: {error}").format(item=item, error=e))
+            print(
+                _report(
+                    tr("  WARNING: could not remove {item}: {error}").format(item=item, error=e)
+                )
+            )
     if keep_iso and not kept_iso:
         print(
-            tr("  Note: no cached ISO found to keep — dockur will re-download on the next install.")
+            _report(
+                tr(
+                    "  Note: no cached ISO found to keep — dockur will re-download "
+                    "on the next install."
+                )
+            )
         )
 
 

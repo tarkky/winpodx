@@ -369,9 +369,11 @@ class BringUpProgressDialog(ChromeDialog):
 
             self._row_widgets.append((glyph, name, elapsed))
 
-        # ----- pod-log expander -----------------------------------------
+        # ----- detailed-log expander -------------------------------------
+        # The view below keeps being appended to while collapsed, so it IS the
+        # buffer Copy log reads -- never gate appends on visibility.
         self.pod_log_toggle = QToolButton()
-        self.pod_log_toggle.setText(tr("Pod logs (live)"))
+        self.pod_log_toggle.setText(tr("Detailed log"))
         self.pod_log_toggle.setCheckable(True)
         self.pod_log_toggle.setChecked(False)
         self.pod_log_toggle.setArrowType(Qt.ArrowType.RightArrow)
@@ -512,6 +514,16 @@ class BringUpProgressDialog(ChromeDialog):
             self._active_phase_idx = idx
 
         self._refresh_checklist()
+
+    def on_note(self, header: str, sub_detail: str) -> None:
+        """Update header / sub-detail for work that owns no checklist row.
+
+        ``header`` is ignored when empty, so a stage with no human caption
+        leaves the last meaningful header standing instead of blanking it.
+        """
+        if header:
+            self.header.setText(header)
+        self.sub_detail.setText(sub_detail)
 
     def on_done(self, success: bool, error_msg: str) -> None:
         # Brief final state, then close. We don't auto-close on success

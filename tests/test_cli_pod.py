@@ -1565,3 +1565,56 @@ def test_recreate_progress_mirrors_prints_without_changing_output(
         for _, detail in events
     )
     assert rendered == baseline.out + baseline.err
+
+
+@pytest.mark.usefixtures("cfg")
+@pytest.mark.parametrize(
+    "regime",
+    ["named_volume_removed", "named_volume_keep_iso", "bind_absent"],
+)
+@pytest.mark.parametrize("raises", [False, True])
+def test_wipe_pod_storage_mirrors_outcomes_to_recreate_observer(
+    cfg: Config,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    regime: str,
+    raises: bool,
+) -> None:
+    # Given: a wipe regime with its host boundary mocked, plus the current
+    # stdout the CLI already produces for it (the baseline the observer must
+    # not alter).
+    def _configure() -> None:
+        if regime == "bind_absent":
+            cfg.pod.storage_path = str(tmp_path / "absent")
+            return
+        cfg.pod.storage_path = ""
+        run = MagicMock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+        monkeypatch.setattr("subprocess.run", run)
+
+    _configure()
+    keep_iso = regime == "named_volume_keep_iso"
+    pod._wipe_pod_storage(cfg, keep_iso=keep_iso)
+    baseline = capsys.readouterr()
+    assert baseline.out  # the wipe always narrates its outcome
+
+    events: list[tuple[str, str]] = []
+
+    def observe(stage: str, detail: str) -> None:
+        events.append((stage, detail))
+        if raises:
+            raise RuntimeError("observer unavailable")
+
+    # When: the same wipe runs with a (possibly broken) progress observer.
+    _configure()
+    result = pod._wipe_pod_storage(cfg, keep_iso=keep_iso, on_progress=observe)
+
+    # Then: it still returns normally, stdout is byte-for-byte the baseline,
+    # and every outcome line was mirrored to on_progress under the 'recreate'
+    # stage (so the wizard log shows the wipe, not a silent gap).
+    assert result is None
+    assert capsys.readouterr() == baseline
+    assert events, "no wipe outcome reached on_progress"
+    assert all(stage == "recreate" for stage, _ in events)
+    rendered = "".join(detail + "\n" for _, detail in events)
+    assert rendered == baseline.out

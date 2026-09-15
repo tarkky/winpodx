@@ -1348,3 +1348,131 @@ def test_bringup_dialog_follows_the_scheme_active_when_it_opens() -> None:
             light.deleteLater()
     finally:
         theme.rebuild(previous)
+
+
+# ----- Detailed log expander: label, default-collapsed, buffer + tail -----
+# The approved chrome renames the "Pod logs (live)" expander to "Detailed log",
+# keeps it collapsed by default, retains structured progress lines in the
+# hidden view (so a user who opens it late still sees the whole run), starts
+# the podman tail only when a cfg is present, stops it on collapse, and keeps
+# the Elapsed label advancing via the existing 1-second tick while a long
+# stage runs.
+
+
+def test_detailed_log_toggle_label_and_default_collapsed() -> None:
+    _ensure_qapp()
+    from winpodx.gui._main_window_bringup import BringUpProgressDialog
+
+    dlg = BringUpProgressDialog(None, on_cancel=lambda: None, cfg=None)
+    try:
+        # Then: the expander is labelled "Detailed log" and starts collapsed.
+        assert dlg.pod_log_toggle.text() == "Detailed log"
+        assert dlg.pod_log_toggle.isChecked() is False
+        assert dlg.pod_log_view.isVisible() is False
+    finally:
+        dlg.reject()
+
+
+def test_structured_progress_retained_while_collapsed_and_visible_after_expand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ensure_qapp()
+    from winpodx.gui._main_window_bringup import BringUpProgressDialog
+
+    dlg = BringUpProgressDialog(None, on_cancel=lambda: None, cfg=None)
+    # Isolate the expander toggle from the real podman tail subprocess.
+    monkeypatch.setattr(dlg, "_start_pod_tail", lambda: None)
+    monkeypatch.setattr(dlg, "_stop_pod_tail", lambda: None)
+    try:
+        # Given: the expander is collapsed (default) -- toggle off, view hidden.
+        #        isVisibleTo(dlg) reads the widget's own shown/hidden state
+        #        without requiring the dialog itself to be show()n.
+        assert dlg.pod_log_toggle.isChecked() is False
+        assert dlg.pod_log_view.isVisibleTo(dlg) is False
+
+        # When: structured progress lines arrive while collapsed.
+        dlg.append_pod_log_line("[recreate] Stopping pod...")
+        dlg.append_pod_log_line("[wait_ready] Waiting for the pod...")
+
+        # Then: the toggle/view stay hidden, but the lines are retained in full
+        #       and in order -- the hidden view IS the buffer, so log_text() /
+        #       Copy log never omit a collapsed line.
+        assert dlg.pod_log_toggle.isChecked() is False
+        assert dlg.pod_log_view.isVisibleTo(dlg) is False
+        collapsed_text = dlg.pod_log_view.toPlainText()
+        assert "[recreate] Stopping pod..." in collapsed_text
+        assert "[wait_ready] Waiting for the pod..." in collapsed_text
+        assert collapsed_text.index("[recreate] Stopping pod...") < collapsed_text.index(
+            "[wait_ready]"
+        )
+
+        # When: the user expands the Detailed log.
+        dlg.pod_log_toggle.setChecked(True)
+
+        # Then: the same complete, ordered text is now visible.
+        assert dlg.pod_log_view.isVisibleTo(dlg) is True
+        assert dlg.pod_log_view.toPlainText() == collapsed_text
+    finally:
+        dlg.reject()
+
+
+def test_expand_starts_tail_only_with_cfg_and_collapse_stops_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ensure_qapp()
+    from winpodx.gui._main_window_bringup import BringUpProgressDialog
+
+    # Given: a dialog WITHOUT a cfg reference.
+    no_cfg = BringUpProgressDialog(None, on_cancel=lambda: None, cfg=None)
+    started: list[int] = []
+    stopped: list[int] = []
+    monkeypatch.setattr(no_cfg, "_start_pod_tail", lambda: started.append(1))
+    monkeypatch.setattr(no_cfg, "_stop_pod_tail", lambda: stopped.append(1))
+    try:
+        # When: it is expanded, the tail must NOT start (no container to tail).
+        no_cfg.pod_log_toggle.setChecked(True)
+        assert started == []
+    finally:
+        no_cfg.reject()
+
+    # Given: a dialog WITH a cfg reference.
+    with_cfg = BringUpProgressDialog(None, on_cancel=lambda: None, cfg=_make_cfg())
+    started_cfg: list[int] = []
+    stopped_cfg: list[int] = []
+    monkeypatch.setattr(with_cfg, "_start_pod_tail", lambda: started_cfg.append(1))
+    monkeypatch.setattr(with_cfg, "_stop_pod_tail", lambda: stopped_cfg.append(1))
+    try:
+        # When: expanded, the tail starts; when collapsed, it stops.
+        with_cfg.pod_log_toggle.setChecked(True)
+        assert started_cfg == [1]
+        with_cfg.pod_log_toggle.setChecked(False)
+        assert stopped_cfg == [1]
+    finally:
+        with_cfg.reject()
+
+
+def test_elapsed_label_advances_via_existing_tick_during_a_long_stage() -> None:
+    _ensure_qapp()
+    from winpodx.gui._main_window_bringup import BringUpProgressDialog
+
+    dlg = BringUpProgressDialog(None, on_cancel=lambda: None, cfg=None)
+    try:
+        # Given: a long stage in progress and a monotonic clock driven from a
+        #        mutable cell (never exhausts -- _on_tick reads it more than
+        #        once), so the test never sleeps on the real 1-second timer.
+        clock = {"t": 100.0}
+        dlg._monotonic = lambda: clock["t"]
+        dlg._dialog_started_at = 100.0
+        dlg.on_phase("phase_1_pod", "Downloading Windows...")
+        before = dlg.elapsed_label.text()
+
+        # When: wall-clock time advances and the existing per-second tick fires
+        #       while the stage still runs (the row is not yet done).
+        clock["t"] = 137.0
+        dlg._on_tick()
+
+        # Then: the Elapsed label advanced to the new wall-clock reading.
+        assert dlg.elapsed_label.text() != before
+        assert "0:37" in dlg.elapsed_label.text()
+    finally:
+        dlg.reject()

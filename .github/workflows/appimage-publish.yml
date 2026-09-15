@@ -101,6 +101,9 @@ jobs:
           # into bin/winpodx that doesn't exist at AppImage-extract time
           # -> "bad interpreter". The -m form runs the module through the
           # bundled interpreter directly and ignores the broken shebang.
+          if [ "$#" -eq 0 ]; then
+              set -- gui
+          fi
           exec "$APPDIR/opt/python/bin/python3" -m winpodx "$@"
           APPRUN
           chmod +x AppDir/AppRun

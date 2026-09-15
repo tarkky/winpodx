@@ -324,7 +324,7 @@ def test_reinstall_wizard_streams_handle_pod_progress_before_completion(
         assert dlg.pages.currentIndex() == 4
         assert dlg._thread is not None and dlg._thread.isRunning()
         assert progress._done is False
-        assert progress.pod_log_view.isVisible()
+        assert not progress.pod_log_view.isVisible()
         log_text = dlg.install.log_text()
         assert "pod log unavailable" not in log_text
         for stage, detail in _RESET_PRE_STAGES:
@@ -356,3 +356,116 @@ def test_reinstall_wizard_streams_handle_pod_progress_before_completion(
         release.set()
         _wait_until(lambda: dlg._thread is None)
         dlg.close()
+
+
+# --------------------------------------------------------------------------
+# Reinstall pre-stages — recreate/reset get a human header, not "Phase 1/5"
+# --------------------------------------------------------------------------
+# handle_pod(reset) streams `recreate` and `reset` stages that own no
+# checklist row. On main InstallPage.on_setup_progress only touches header +
+# sub_detail for mapped stages, so these unmapped stages leave the header on
+# the misleading "Phase 1 / 5 . Download & install Windows" and never surface
+# their own detail. The approved behaviour gives each a human header while
+# still routing the raw detail to sub_detail + the log and leaving the
+# checklist untouched (they aren't provisioning phases).
+
+# "agent_settle" -> row 1 (index 1). Row 0 is already seeded by begin(), so a
+# stage that lands on a *later* row proves mapped routing still advances the
+# checklist even after an unmapped pre-stage passed through.
+_MAPPED_LATER_STAGE = _FINISH_PROVISIONING_STAGES[1][0]
+
+
+def _fresh_install_page():
+    _ensure_qapp()
+    from winpodx.gui._setup_wizard_pages import InstallPage
+
+    page = InstallPage(on_cancel=lambda: None, cfg=None)
+    page.begin()
+    return page
+
+
+def test_recreate_stage_shows_preparing_header_detail_and_log_no_advance() -> None:
+    page = _fresh_install_page()
+    dlg = page.progress
+    try:
+        # Given: the freshly-embedded install page (no phase advanced yet).
+        started_before = dict(dlg._phase_started_at)
+
+        # When: a `recreate` pre-stage arrives.
+        page.on_setup_progress("recreate", "Stopping pod...")
+
+        # Then: the header reads the human "Preparing Windows", the raw detail
+        #       lands in sub_detail and the log, and no checklist row started.
+        assert dlg.header.text() == "Preparing Windows"
+        assert dlg.sub_detail.text() == "Stopping pod..."
+        assert "[recreate] Stopping pod..." in dlg.pod_log_view.toPlainText()
+        assert dict(dlg._phase_started_at) == started_before
+    finally:
+        page.deleteLater()
+
+
+def test_reset_stage_shows_reinstalling_header_detail_and_log_no_advance() -> None:
+    page = _fresh_install_page()
+    dlg = page.progress
+    try:
+        started_before = dict(dlg._phase_started_at)
+
+        # When: a `reset` pre-stage arrives.
+        page.on_setup_progress("reset", "Re-running provisioning on the fresh guest...")
+
+        # Then: header reads "Reinstalling Windows"; detail + log carry it; the
+        #       checklist stays where it was.
+        assert dlg.header.text() == "Reinstalling Windows"
+        assert dlg.sub_detail.text() == "Re-running provisioning on the fresh guest..."
+        assert (
+            "[reset] Re-running provisioning on the fresh guest..."
+            in dlg.pod_log_view.toPlainText()
+        )
+        assert dict(dlg._phase_started_at) == started_before
+    finally:
+        page.deleteLater()
+
+
+def test_unknown_stage_keeps_header_but_updates_detail_and_log() -> None:
+    page = _fresh_install_page()
+    dlg = page.progress
+    try:
+        # Given: a header set by a known pre-stage first.
+        page.on_setup_progress("recreate", "Stopping pod...")
+        header_before = dlg.header.text()
+        started_before = dict(dlg._phase_started_at)
+
+        # When: a stage with no mapping and no human header arrives.
+        page.on_setup_progress("mystery_stage", "something happened")
+
+        # Then: the header is unchanged, but the detail + log still update, and
+        #       the checklist does not advance.
+        assert dlg.header.text() == header_before
+        assert dlg.sub_detail.text() == "something happened"
+        assert "[mystery_stage] something happened" in dlg.pod_log_view.toPlainText()
+        assert dict(dlg._phase_started_at) == started_before
+    finally:
+        page.deleteLater()
+
+
+def test_mapped_stage_still_advances_checklist_after_a_pre_stage() -> None:
+    page = _fresh_install_page()
+    dlg = page.progress
+    try:
+        # Given: a recreate pre-stage that sets the human header and must not
+        #        consume a checklist row (begin() already seeded row 0, so row
+        #        1 is still untouched).
+        page.on_setup_progress("recreate", "Stopping pod...")
+        assert dlg.header.text() == "Preparing Windows"
+        assert 1 not in dlg._phase_started_at
+
+        # When: a mapped provisioning stage that routes to row 1 arrives.
+        page.on_setup_progress(_MAPPED_LATER_STAGE, "Guest agent settling...")
+
+        # Then: the header flips back from the human pre-stage form to the
+        #       phase form, and row 1 advances (mapped routing survives).
+        assert 1 in dlg._phase_started_at
+        assert dlg._active_phase_idx == 1
+        assert "Phase 2 /" in dlg.header.text()
+    finally:
+        page.deleteLater()
