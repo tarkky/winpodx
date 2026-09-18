@@ -26,6 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/kernalix7/winpodx/main/uninstall.sh
 [![Latest](https://img.shields.io/github/v/release/kernalix7/winpodx?include_prereleases&style=for-the-badge&label=latest&color=2962FF)](https://github.com/kernalix7/winpodx/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/kernalix7/winpodx/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/kernalix7/winpodx/actions/workflows/ci.yml)
 [![tests](https://img.shields.io/badge/tests-4000%2B-2EA44F?style=for-the-badge)](#테스트)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/j2kmzUNaR3)
 
 [![license](https://img.shields.io/github/license/kernalix7/winpodx?style=flat-square&color=blue)](../LICENSE)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
@@ -199,6 +200,8 @@ ruff format --check src/ tests/
 ## 기여 및 라이선스
 
 변경을 보내기 전에 [CONTRIBUTING.ko.md](CONTRIBUTING.ko.md)를 읽어 주세요. 보안 제보는 [SECURITY.ko.md](SECURITY.ko.md)를 따릅니다. WinPodX는 [MIT 라이선스](../LICENSE)이며 저작자는 Kim DaeHyun입니다.
+
+설치 도움말과 질문, 릴리스 소식은 [Discord 커뮤니티](https://discord.gg/j2kmzUNaR3)에서 나눕니다. 버그와 기능 요청은 검색 가능하도록 [이슈](https://github.com/kernalix7/winpodx/issues)에 남겨 주세요.
 
 ## Star History
 
