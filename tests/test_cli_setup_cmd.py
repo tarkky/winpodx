@@ -7,6 +7,7 @@ import argparse
 import json
 import subprocess
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
@@ -544,24 +545,20 @@ def test_full_provision_wait_fn_streams_live_lines_as_wait_ready_progress(capsys
     assert ("wait_ready", "      OK Container running") in progress
 
 
-def test_rotate_password_success_writes_config_and_compose(tmp_path: Path, capsys) -> None:
+def test_rotate_password_delegates_to_core_transaction(tmp_path: Path, capsys) -> None:
     cfg = Config()
     cfg.pod.backend = "podman"
     cfg.rdp.password = "old-password"
     cfg.save()
-    generated = MagicMock(side_effect=lambda current, path: path.write_text("compose-new\n"))
     with (
         patch("winpodx.cli.setup_cmd.Config.load", return_value=cfg),
         patch("winpodx.core.pod.pod_status", return_value=PodStatus(PodState.RUNNING)),
-        patch("winpodx.core.provisioner._change_windows_password", return_value=True) as change,
+        patch("winpodx.core.rotation.rotate_password", return_value=True) as rotate,
         patch("winpodx.cli.setup_cmd._generate_password", return_value="new-password"),
-        patch("winpodx.cli.setup_cmd._generate_compose_to", generated),
     ):
         setup_cmd.handle_rotate_password(_args())
 
-    change.assert_called_once_with(cfg, "new-password")
-    assert (Config.path().parent / "compose.yaml").read_text() == "compose-new\n"
-    assert Config.load().rdp.password == "new-password"
+    rotate.assert_called_once_with(cfg, "new-password")
     assert "Password rotated successfully." in capsys.readouterr().out
 
 
@@ -582,7 +579,7 @@ def test_rotate_password_rejects_backend_stopped_and_guest_failure(capsys) -> No
     with (
         patch("winpodx.cli.setup_cmd.Config.load", return_value=cfg),
         patch("winpodx.core.pod.pod_status", return_value=PodStatus(PodState.RUNNING)),
-        patch("winpodx.core.provisioner._change_windows_password", return_value=False),
+        patch("winpodx.core.rotation.rotate_password", return_value=False),
         patch("winpodx.cli.setup_cmd._generate_password", return_value="unused-password"),
         pytest.raises(SystemExit),
     ):
@@ -593,7 +590,9 @@ def test_rotate_password_rejects_backend_stopped_and_guest_failure(capsys) -> No
     assert "Failed to change Windows password" in output
 
 
-def test_rotate_password_rolls_back_when_compose_generation_fails(capsys) -> None:
+def test_rotate_password_reports_unresolved_transaction(capsys) -> None:
+    from winpodx.core.rotation import RotationError
+
     cfg = Config()
     cfg.pod.backend = "podman"
     cfg.rdp.password = "old-password"
@@ -601,15 +600,35 @@ def test_rotate_password_rolls_back_when_compose_generation_fails(capsys) -> Non
     with (
         patch("winpodx.cli.setup_cmd.Config.load", return_value=cfg),
         patch("winpodx.core.pod.pod_status", return_value=PodStatus(PodState.RUNNING)),
-        patch("winpodx.core.provisioner._change_windows_password", return_value=True),
+        patch(
+            "winpodx.core.rotation.rotate_password",
+            side_effect=RotationError("guest outcome unknown"),
+        ),
         patch("winpodx.cli.setup_cmd._generate_password", return_value="new-password"),
-        patch("winpodx.cli.setup_cmd._generate_compose_to", side_effect=OSError("disk full")),
-        pytest.raises(OSError, match="disk full"),
+        pytest.raises(SystemExit),
     ):
         setup_cmd.handle_rotate_password(_args())
     assert cfg.rdp.password == "old-password"
     assert cfg.rdp.password_updated == "old-time"
-    assert "config and compose were not modified" in capsys.readouterr().out
+    assert "Password rotation is unresolved: guest outcome unknown" in capsys.readouterr().out
+
+
+def test_rotate_password_interrupt_reports_pending_state_check(capsys) -> None:
+    cfg = Config()
+    cfg.pod.backend = "podman"
+    cfg.rdp.password = "old-password"
+    with (
+        patch("winpodx.cli.setup_cmd.Config.load", return_value=cfg),
+        patch("winpodx.core.pod.pod_status", return_value=PodStatus(PodState.RUNNING)),
+        patch("winpodx.core.rotation.rotate_password", side_effect=KeyboardInterrupt),
+        patch("winpodx.cli.setup_cmd._generate_password", return_value="new-password"),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        setup_cmd.handle_rotate_password(_args())
+
+    assert "Password rotation interrupted; check pending rotation state before retrying." in (
+        capsys.readouterr().out
+    )
 
 
 def test_register_desktop_entries_installs_apps_and_updates_cache() -> None:
@@ -656,28 +675,40 @@ def test_handle_setup_customize_podman_applies_wizard_and_writes_config(
     )
     tier = SimpleNamespace(cpu_cores=6, ram_gb=8, label="high")
     host = SimpleNamespace(cpu_threads=16, ram_gb=32)
-    with (
-        patch("winpodx.cli.setup_cmd.check_all", return_value=_deps()),
-        patch("winpodx.cli.setup_cmd.import_winapps_config", return_value=None),
-        patch("winpodx.cli.setup_cmd._ask", side_effect=lambda *args, **kwargs: next(answers)),
-        patch("getpass.getpass", return_value="WizardPassword!"),
-        patch("winpodx.utils.specs.detect_host_specs", return_value=host),
-        patch("winpodx.utils.specs.recommend_tier", return_value=tier),
-        patch("winpodx.utils.locale.detect_timezone", return_value="UTC"),
-        patch("winpodx.cli.setup_cmd._prompt_edition_locale_tuning") as locale_prompt,
-        patch("winpodx.core.storage_migration.resolve_named_volume", return_value=None),
-        patch("winpodx.cli.setup_cmd._decide_storage_mode") as storage_decision,
-        patch("winpodx.cli.setup_cmd._stage_win_iso") as stage_iso,
-        patch("winpodx.cli.setup_cmd._generate_compose") as compose,
-        patch("winpodx.cli.setup_cmd._recreate_container") as recreate,
-        patch("winpodx.display.scaling.detect_scale_factor", return_value=125),
-        patch("winpodx.display.scaling.detect_raw_scale", return_value=1.5),
-        patch("winpodx.utils.specs.detect_tuning_capability", return_value=SimpleNamespace()),
-        patch("winpodx.utils.specs.recommend_tuning_profile", return_value="safe"),
-        patch("winpodx.utils.specs.format_tuning_summary", return_value="safe tuning"),
-        patch("winpodx.cli.setup_cmd._ensure_oem_token_staged"),
-        patch("winpodx.cli.setup_cmd._register_all_desktop_entries"),
-    ):
+    with ExitStack() as stack:
+        stack.enter_context(patch("winpodx.cli.setup_cmd.check_all", return_value=_deps()))
+        stack.enter_context(patch("winpodx.cli.setup_cmd.import_winapps_config", return_value=None))
+        stack.enter_context(
+            patch("winpodx.cli.setup_cmd._ask", side_effect=lambda *args, **kwargs: next(answers))
+        )
+        stack.enter_context(patch("getpass.getpass", return_value="WizardPassword!"))
+        stack.enter_context(patch("winpodx.utils.specs.detect_host_specs", return_value=host))
+        stack.enter_context(patch("winpodx.utils.specs.recommend_tier", return_value=tier))
+        stack.enter_context(patch("winpodx.utils.locale.detect_timezone", return_value="UTC"))
+        locale_prompt = stack.enter_context(
+            patch("winpodx.cli.setup_cmd._prompt_edition_locale_tuning")
+        )
+        stack.enter_context(patch("winpodx.setup_wizard.host_state.require_preflight"))
+        stack.enter_context(
+            patch("winpodx.core.storage_migration.resolve_named_volume", return_value=None)
+        )
+        storage_decision = stack.enter_context(patch("winpodx.cli.setup_cmd._decide_storage_mode"))
+        stage_iso = stack.enter_context(patch("winpodx.cli.setup_cmd._stage_win_iso"))
+        compose = stack.enter_context(patch("winpodx.cli.setup_cmd._generate_compose"))
+        recreate = stack.enter_context(patch("winpodx.cli.setup_cmd._recreate_container"))
+        stack.enter_context(patch("winpodx.display.scaling.detect_scale_factor", return_value=125))
+        stack.enter_context(patch("winpodx.display.scaling.detect_raw_scale", return_value=1.5))
+        stack.enter_context(
+            patch("winpodx.utils.specs.detect_tuning_capability", return_value=SimpleNamespace())
+        )
+        stack.enter_context(
+            patch("winpodx.utils.specs.recommend_tuning_profile", return_value="safe")
+        )
+        stack.enter_context(
+            patch("winpodx.utils.specs.format_tuning_summary", return_value="safe tuning")
+        )
+        stack.enter_context(patch("winpodx.cli.setup_cmd._ensure_oem_token_staged"))
+        stack.enter_context(patch("winpodx.cli.setup_cmd._register_all_desktop_entries"))
         setup_cmd.handle_setup(_args(customize=True))
 
     saved = Config.load()
@@ -736,12 +767,40 @@ def test_handle_setup_rejects_invalid_wizard_storage_before_container_creation(
 def test_handle_setup_dependency_and_backend_failures(
     monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    monkeypatch.setattr("sys.stdin", MagicMock(isatty=lambda: True))
     missing = _deps()
     missing["freerdp"] = DepCheck("freerdp", False, note="missing")
-    with patch("winpodx.cli.setup_cmd.check_all", return_value=missing), pytest.raises(SystemExit):
-        setup_cmd.handle_setup(_args())
+    from winpodx.setup_wizard.host_state import PreflightIssue, PreflightReport
 
+    monkeypatch.setattr("sys.stdin", MagicMock(isatty=lambda: False))
+    with (
+        patch("winpodx.cli.setup_cmd.check_all", return_value=missing),
+        patch("winpodx.cli.setup_cmd.import_winapps_config", return_value=None),
+        patch("winpodx.cli.setup_cmd._resolve_credentials"),
+        patch("winpodx.utils.specs.detect_host_specs", return_value=SimpleNamespace()),
+        patch(
+            "winpodx.utils.specs.recommend_tier",
+            return_value=SimpleNamespace(cpu_cores=4, ram_gb=6),
+        ),
+        patch(
+            "winpodx.setup_wizard.host_state.inspect_preflight",
+            return_value=PreflightReport(
+                (
+                    PreflightIssue("freerdp", "Install FreeRDP 3+", False),
+                    PreflightIssue("cpu_virtualization", "Enable CPU virtualization", False),
+                )
+            ),
+        ),
+        pytest.raises(SystemExit) as exc,
+    ):
+        setup_cmd.handle_setup(_args(backend="podman"))
+    assert exc.value.code == 1
+    report = capsys.readouterr().err
+    assert report.count("Host preflight failed:") == 1
+    assert "FreeRDP 3+" in report
+    assert "CPU virtualization" in report
+    assert "Traceback" not in report
+
+    monkeypatch.setattr("sys.stdin", MagicMock(isatty=lambda: True))
     with (
         patch("winpodx.cli.setup_cmd.check_all", return_value=_deps()),
         patch("winpodx.cli.setup_cmd.import_winapps_config", return_value=None),
@@ -750,7 +809,7 @@ def test_handle_setup_dependency_and_backend_failures(
     ):
         setup_cmd.handle_setup(_args(customize=True))
     output = capsys.readouterr().out
-    assert "FreeRDP 3+ is required" in output
+    assert "freerdp" in output
     assert "Invalid choice: invalid" in output
 
 
@@ -770,6 +829,7 @@ def test_handle_setup_rejects_unreachable_selected_daemon(
         ),
         patch("winpodx.cli.setup_cmd._decide_storage_mode"),
         patch("winpodx.cli.setup_cmd._stage_win_iso"),
+        patch("winpodx.setup_wizard.host_state.require_preflight"),
         pytest.raises(SystemExit),
     ):
         setup_cmd.handle_setup(_args())

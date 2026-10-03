@@ -22,6 +22,7 @@ from winpodx.core.pod import PodState, check_rdp_port, pod_status, start_pod
 # ...)``) keep working. The shim disappears in Step 6 (slim ensure_ready).
 from winpodx.core.rotation import (  # noqa: F401  re-exports
     _ROTATION_PENDING_MARKER,
+    RotationError,
     _auto_rotate_password,
     _change_windows_password,
     _check_rotation_pending,
@@ -113,9 +114,6 @@ def ensure_ready(cfg: Config | None = None, timeout: int = 300) -> Config:
     if cfg is None:
         cfg = _ensure_config()
 
-    _check_rotation_pending()
-    cfg = _auto_rotate_password(cfg)
-
     # v0.2.2 (post-rollback Sprint 3): self-heal removed.
     #
     # Previously this block re-applied 4 registry/service payloads
@@ -133,19 +131,38 @@ def ensure_ready(cfg: Config | None = None, timeout: int = 300) -> Config:
     # invoke `winpodx pod apply-fixes` (CLI) or click "Apply Windows
     # Fixes" (GUI Tools page) — both still call apply_windows_runtime_fixes
     # below, which surfaces per-step success/failure to the caller.
-    if check_rdp_port(cfg.rdp.ip, cfg.rdp.port, timeout=0.3):
+    rdp_ready = check_rdp_port(cfg.rdp.ip, cfg.rdp.port, timeout=0.3)
+    if not rdp_ready:
+        from winpodx.setup_wizard.host_state import require_preflight
+
+        try:
+            require_preflight(cfg)
+        except RuntimeError as exc:
+            raise ProvisionError(str(exc)) from exc
+
+        _check_deps()
+
+        if cfg.pod.backend in ("podman", "docker"):
+            _ensure_compose(cfg)
+
+        from winpodx.core.daemon import ensure_pod_awake
+
+        ensure_pod_awake(cfg)
+
+        _ensure_pod_running(cfg, timeout)
+
+    _check_rotation_pending()
+    try:
+        cfg = _auto_rotate_password(cfg)
+    except RotationError as e:
+        raise ProvisionError(
+            f"Automatic password rotation failed: {e}. "
+            "Resolve the pending rotation before retrying app launch."
+        ) from e
+
+    if rdp_ready:
         return cfg
 
-    _check_deps()
-
-    if cfg.pod.backend in ("podman", "docker"):
-        _ensure_compose(cfg)
-
-    from winpodx.core.daemon import ensure_pod_awake
-
-    ensure_pod_awake(cfg)
-
-    _ensure_pod_running(cfg, timeout)
     # Bug B: after host suspend / long idle the pod can be running but RDP
     # itself is dead while VNC is fine. Probe and try to revive TermService
     # before handing the cfg to the caller — the alternative is the FreeRDP
@@ -1058,11 +1075,11 @@ def _apply_guest_share(cfg: Config) -> None:
 
 
 def _apply_vbs_launchers(cfg: Config) -> None:
-    """Push hidden-launcher.vbs / launch_uwp.{vbs,ps1} / agent-respawn.ps1
-    + update HKCU\\Run + auto-respawn the running agent under the new
-    wrapper so existing pods stop flashing PowerShell windows on agent
-    autostart and UWP launches — without needing a user logout or pod
-    restart.
+    """Push hidden-launcher.vbs / launch_uwp.{vbs,ps1} / launch_file.vbs /
+    agent-respawn.ps1 + update HKCU\\Run + auto-respawn the running agent
+    under the new wrapper so existing pods stop flashing PowerShell windows
+    on agent autostart and UWP launches, and gain the #833 file-open
+    RemoteApp wrapper -- without needing a user logout or pod restart.
 
     Migration path for users on v0.3.0-RTM1 / OEM v12 / v13. Fresh installs
     from OEM v14+ already have the files staged via install.bat; this step
@@ -1098,18 +1115,26 @@ def _apply_vbs_launchers(cfg: Config) -> None:
         # session enable` can activate rdprrap on existing pods without
         # forcing a container recreate. See cli.pod._multi_session.
         "rdprrap-activate.ps1",
+        # launch_file.vbs (#833) is the RemoteApp file-open wrapper that
+        # rdp._file_wrapper_payload points wscript.exe at. Staging it here
+        # lets existing pods gain file opens without a container recreate.
+        "launch_file.vbs",
     )
-    sources: dict[str, str] = {}
+    sources: dict[str, bytes] = {}
     for fname in files:
         path = oem_root / fname
         if not path.is_file():
             raise RuntimeError(f"vbs_launchers source missing: {path}")
         try:
-            sources[fname] = path.read_text(encoding="utf-8")
+            # Raw bytes, NOT decoded text (#833): the staged launcher must
+            # land in the guest byte-identical (CRLF line endings, exact
+            # UTF-8 sequence). A text read would normalise newlines and
+            # re-encode, both of which change the bytes.
+            sources[fname] = path.read_bytes()
         except OSError as e:
             raise RuntimeError(f"cannot read {path}: {e}") from e
 
-    # Build a single PS payload that writes all three files + updates
+    # Build a single PS payload that writes all the launcher files + updates
     # HKCU\Run in one /exec round-trip. Each file body is base64-encoded
     # in transit so embedded quotes / newlines / unicode survive the
     # PowerShell here-string boundary cleanly.
@@ -1122,7 +1147,7 @@ def _apply_vbs_launchers(cfg: Config) -> None:
         "if (-not (Test-Path $dir)) { [void](New-Item -ItemType Directory -Force -Path $dir) }",
     ]
     for fname, body in sources.items():
-        b64 = _b64.b64encode(body.encode("utf-8")).decode("ascii")
+        b64 = _b64.b64encode(body).decode("ascii")
         target = f"{target_dir}\\{fname}"
         lines.append(f"$bytes = [Convert]::FromBase64String('{b64}')")
         lines.append(f"[IO.File]::WriteAllBytes('{target}', $bytes)")

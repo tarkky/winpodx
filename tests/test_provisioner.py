@@ -339,6 +339,114 @@ def test_ensure_ready_does_not_auto_apply_runtime_fixes(monkeypatch):
     }
 
 
+def test_ensure_ready_wraps_auto_rotation_failure(monkeypatch):
+    from winpodx.core import provisioner, rotation
+    from winpodx.core.config import Config
+
+    cfg = Config()
+    monkeypatch.setattr(provisioner, "_check_rotation_pending", lambda: None)
+    monkeypatch.setattr(provisioner, "check_rdp_port", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        provisioner,
+        "_auto_rotate_password",
+        lambda _cfg: (_ for _ in ()).throw(rotation.RotationError("outcome is unknown")),
+    )
+
+    with pytest.raises(ProvisionError, match="Resolve the pending rotation") as exc_info:
+        provisioner.ensure_ready(cfg)
+
+    assert isinstance(exc_info.value.__cause__, rotation.RotationError)
+
+
+@pytest.mark.parametrize(
+    ("configured_password", "max_age"),
+    [("old-password", 0), ("", 1), ("stale-password", 0)],
+)
+def test_ensure_ready_rejects_unresolved_pending_rotation(
+    tmp_path, monkeypatch, configured_password, max_age
+):
+    from winpodx.core import provisioner, rotation
+    from winpodx.core.config import Config
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    cfg = Config()
+    cfg.rdp.password = configured_password
+    cfg.rdp.password_max_age = max_age
+    cfg.save()
+    marker = rotation._rotation_marker_path()
+    original = "old-password\nnew-password\n"
+    marker.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(provisioner, "check_rdp_port", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(rotation, "_verify_windows_password", lambda _cfg, _password: False)
+
+    with pytest.raises(ProvisionError, match="Resolve the pending rotation") as exc_info:
+        provisioner.ensure_ready(cfg)
+
+    assert isinstance(exc_info.value.__cause__, rotation.RotationError)
+    assert marker.read_text(encoding="utf-8") == original
+    assert Config.load().rdp.password == configured_password
+
+
+@pytest.mark.parametrize(
+    ("configured_password", "max_age"),
+    [("old-password", 0), ("", 1), ("stale-password", 0)],
+)
+def test_ensure_ready_recovers_pending_rotation_before_launch(
+    tmp_path, monkeypatch, configured_password, max_age
+):
+    from winpodx.core import provisioner, rotation
+    from winpodx.core.config import Config
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    cfg = Config()
+    cfg.rdp.password = configured_password
+    cfg.rdp.password_max_age = max_age
+    cfg.save()
+    marker = rotation._rotation_marker_path()
+    marker.write_text("old-password\nnew-password\n", encoding="utf-8")
+    monkeypatch.setattr(provisioner, "check_rdp_port", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        rotation, "_verify_windows_password", lambda _cfg, password: password == "new-password"
+    )
+
+    ready = provisioner.ensure_ready(cfg)
+
+    assert ready.rdp.password == "new-password"
+    assert Config.load().rdp.password == "new-password"
+    assert not marker.exists()
+
+
+def test_ensure_ready_recovers_password_after_pod_start(monkeypatch):
+    from winpodx.core import provisioner
+    from winpodx.core.config import Config
+
+    cfg = Config()
+    cfg.pod.backend = "manual"
+    events: list[str] = []
+    probes = iter((False, True))
+
+    monkeypatch.setattr(provisioner, "_check_rotation_pending", lambda: None)
+    monkeypatch.setattr(provisioner, "check_rdp_port", lambda *args, **kwargs: next(probes))
+    monkeypatch.setattr(provisioner, "_check_deps", lambda: None)
+    monkeypatch.setattr("winpodx.core.daemon.ensure_pod_awake", lambda _cfg: events.append("awake"))
+    monkeypatch.setattr("winpodx.setup_wizard.host_state.require_preflight", lambda _cfg: None)
+    monkeypatch.setattr(
+        provisioner, "_ensure_pod_running", lambda _cfg, _timeout: events.append("running")
+    )
+    monkeypatch.setattr(
+        provisioner,
+        "_auto_rotate_password",
+        lambda current: events.append("rotation") or current,
+    )
+    monkeypatch.setattr(provisioner, "_ensure_desktop_entries", lambda: None)
+    monkeypatch.setattr("winpodx.cli.host_open.ensure_listener_running", lambda _cfg: None)
+
+    result = provisioner.ensure_ready(cfg, timeout=1)
+
+    assert result is cfg
+    assert events == ["awake", "running", "rotation"]
+
+
 def test_ensure_ready_skips_apply_when_pod_not_running(monkeypatch):
     """When pod isn't running, the early-apply branch is skipped (later branch handles)."""
     from winpodx.core import provisioner
@@ -367,6 +475,60 @@ def test_ensure_ready_skips_apply_when_pod_not_running(monkeypatch):
     # Stopped pod -> the early-branch `pod_status==RUNNING` guard prevents
     # the apply calls from firing on the early return path.
     assert early_calls["n"] == 0
+
+
+def test_restored_first_boot_blocks_before_rotation_compose_and_pod_start(monkeypatch):
+    from winpodx.core import provisioner
+    from winpodx.core.config import Config
+    from winpodx.setup_wizard.host_state import PreflightIssue, PreflightReport
+
+    cfg = Config()
+    cfg.pod.backend = "podman"
+    calls = []
+    monkeypatch.setattr(provisioner, "check_rdp_port", lambda *args, **kwargs: False)
+    monkeypatch.setattr(provisioner, "_check_rotation_pending", lambda: calls.append("rotation"))
+    monkeypatch.setattr(provisioner, "_ensure_compose", lambda c: calls.append("compose"))
+    monkeypatch.setattr(provisioner, "_ensure_pod_running", lambda c, t: calls.append("pod"))
+    monkeypatch.setattr(
+        "winpodx.setup_wizard.host_state.inspect_preflight",
+        lambda *args, **kwargs: PreflightReport(
+            (PreflightIssue("cpu_virtualization", "Enable virtualization in firmware", False),)
+        ),
+    )
+
+    with pytest.raises(provisioner.ProvisionError, match="virtualization"):
+        provisioner.ensure_ready(cfg)
+
+    assert calls == []
+
+
+def test_restored_first_boot_starts_pod_after_passing_preflight(monkeypatch):
+    from winpodx.core import provisioner
+    from winpodx.core.config import Config
+    from winpodx.setup_wizard.host_state import PreflightReport
+
+    cfg = Config()
+    cfg.pod.backend = "docker"
+    events = []
+    states = iter((False, True))
+    monkeypatch.setattr(provisioner, "check_rdp_port", lambda *args, **kwargs: next(states))
+    monkeypatch.setattr(provisioner, "_check_rotation_pending", lambda: events.append("rotation"))
+    monkeypatch.setattr(provisioner, "_auto_rotate_password", lambda c: c)
+    monkeypatch.setattr(provisioner, "_check_deps", lambda: events.append("deps"))
+    monkeypatch.setattr(provisioner, "_ensure_compose", lambda c: events.append("compose"))
+    monkeypatch.setattr(provisioner, "_ensure_pod_running", lambda c, t: events.append("pod"))
+    monkeypatch.setattr(provisioner, "_ensure_desktop_entries", lambda: None)
+    monkeypatch.setattr("winpodx.core.daemon.ensure_pod_awake", lambda c: None)
+    monkeypatch.setattr("winpodx.cli.host_open.ensure_listener_running", lambda c: None)
+    monkeypatch.setattr(
+        "winpodx.setup_wizard.host_state.inspect_preflight",
+        lambda cfg, **kwargs: (events.append("preflight"), PreflightReport(()))[1],
+    )
+
+    result = provisioner.ensure_ready(cfg, timeout=1)
+
+    assert result is cfg
+    assert events == ["preflight", "deps", "compose", "pod", "rotation"]
 
 
 # --- v0.1.9.3: apply_windows_runtime_fixes public API ---
@@ -514,3 +676,110 @@ class TestWaitForWindowsResponsiveRetries:
         result = wait_for_windows_responsive(cfg, timeout=120)
         assert result is True
         assert len(attempts) >= 2, "must retry rather than bail on first failure"
+
+
+# --- issue #833: launch_file.vbs staging in _apply_vbs_launchers ---
+# Failing-first: production does not yet list launch_file.vbs in the staged
+# tuple, so the byte-exact test goes RED (no such target in the payload) and
+# the missing-source test goes RED (no lookup, so no RuntimeError). Both must
+# stay RED until the staging tuple gains launch_file.vbs.
+_OEM_LAUNCHER_FILES = (
+    "hidden-launcher.vbs",
+    "launch_uwp.vbs",
+    "launch_uwp.ps1",
+    "agent-respawn.ps1",
+    "agent-keepalive.ps1",
+    "rdprrap-activate.ps1",
+)
+
+# Stand-in for the real OEM launch_file.vbs. Deliberately mixes CRLF,
+# double quotes, backslashes and non-ASCII so a Base64 round-trip that
+# mangles bytes would be caught, not just a filename check.
+_FUTURE_LAUNCH_FILE_VBS = (
+    "' winpodx launch_file.vbs -- issue #833\r\n"
+    "Option Explicit\r\n"
+    "Dim shell, args, target\r\n"
+    'Set shell = CreateObject("WScript.Shell")\r\n'
+    "Set args = WScript.Arguments\r\n"
+    'target = "C:\\Users\\Public\\winpodx\\launchers\\launch_file.ps1"\r\n'
+    'shell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -File """" '
+    '& target & """" " & args(0), 0, False\r\n'
+    "' 계열사 파일 열기: no console flash\r\n"
+).encode("utf-8")
+
+_LAUNCH_FILE_TARGET = "C:\\Users\\Public\\winpodx\\launchers\\launch_file.vbs"
+
+
+def _make_fake_oem(root, *, include_launch_file: bool) -> None:
+    """Write a fake ``config/oem`` under ``root`` for bundle_dir() to resolve."""
+    oem = root / "config" / "oem"
+    oem.mkdir(parents=True)
+    for fname in _OEM_LAUNCHER_FILES:
+        (oem / fname).write_text(f"{fname} placeholder\n", encoding="utf-8")
+    if include_launch_file:
+        (oem / "launch_file.vbs").write_bytes(_FUTURE_LAUNCH_FILE_VBS)
+
+
+def _staged_files(payload: str) -> dict[str, bytes]:
+    """Map each ``[IO.File]::WriteAllBytes`` target in the payload to its
+    decoded Base64 body, so tests assert exact bytes rather than the mere
+    presence of a filename."""
+    import base64
+    import re
+
+    staged: dict[str, bytes] = {}
+    lines = payload.splitlines()
+    for i, line in enumerate(lines):
+        m = re.search(r"\[IO\.File\]::WriteAllBytes\('([^']*)', \$bytes\)", line)
+        if not m:
+            continue
+        target = m.group(1)
+        b64_line = lines[i - 1]
+        bm = re.search(r"FromBase64String\('([^']*)'\)", b64_line)
+        assert bm, f"no Base64 line precedes write of {target!r}: {b64_line!r}"
+        staged[target] = base64.b64decode(bm.group(1))
+    return staged
+
+
+def test_apply_vbs_launchers_stages_launch_file_exact_bytes(tmp_path, monkeypatch):
+    from winpodx.core import provisioner
+    from winpodx.core.config import Config
+
+    _make_fake_oem(tmp_path, include_launch_file=True)
+    monkeypatch.setattr(provisioner, "bundle_dir", lambda: tmp_path)
+
+    cfg = Config()
+    cfg.pod.backend = "podman"
+    captured = _mock_run_in_windows(
+        monkeypatch, rc=0, stdout="vbs_launchers applied + agent respawn queued"
+    )
+
+    provisioner._apply_vbs_launchers(cfg)
+
+    assert len(captured) == 1
+    description, payload = captured[0]
+    assert description == "apply-vbs-launchers"
+
+    staged = _staged_files(payload)
+    assert _LAUNCH_FILE_TARGET in staged, (
+        "launch_file.vbs was not staged into the Public launchers dir; "
+        f"staged targets: {sorted(staged)}"
+    )
+    assert staged[_LAUNCH_FILE_TARGET] == _FUTURE_LAUNCH_FILE_VBS
+
+
+def test_apply_vbs_launchers_raises_when_launch_file_source_missing(tmp_path, monkeypatch):
+    from winpodx.core import provisioner
+    from winpodx.core.config import Config
+
+    _make_fake_oem(tmp_path, include_launch_file=False)
+    monkeypatch.setattr(provisioner, "bundle_dir", lambda: tmp_path)
+
+    cfg = Config()
+    cfg.pod.backend = "podman"
+    captured = _mock_run_in_windows(monkeypatch)
+
+    with pytest.raises(RuntimeError, match=r"vbs_launchers source missing:.*launch_file\.vbs"):
+        provisioner._apply_vbs_launchers(cfg)
+    # A missing source must abort before any /exec round-trip.
+    assert captured == []

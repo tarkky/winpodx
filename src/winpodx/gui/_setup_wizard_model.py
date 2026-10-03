@@ -24,6 +24,9 @@ class SetupAnswers:
     disk_size: str
     rdp_user: str
     tuning_profile: str
+    backend: str
+    storage_path: str
+    win_iso: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,8 +41,11 @@ class PrereqSpec:
 
 
 def prereq_specs() -> tuple[PrereqSpec, ...]:
-    """The 7 HostState rows, with copy matching the terminal wizard."""
+    """Host setup plus minimum Windows boot requirements."""
     return (
+        PrereqSpec(
+            "cpu_virtualization", tr("CPU virtualization"), tr("VT-x / AMD-V enabled"), True, ""
+        ),
         PrereqSpec(
             "dev_kvm_present",
             tr("/dev/kvm present"),
@@ -89,11 +95,19 @@ def prereq_specs() -> tuple[PrereqSpec, ...]:
             False,
             "",
         ),
+        PrereqSpec("ram", tr("Host RAM"), tr("at least 8 GiB"), True, ""),
+        PrereqSpec("disk", tr("Windows storage space"), tr("disk and ISO space"), True, ""),
+        PrereqSpec("iso", tr("Local Windows ISO"), tr("readable when selected"), True, ""),
+        PrereqSpec("freerdp", tr("FreeRDP"), tr("version 3 or newer"), True, ""),
+        PrereqSpec("backend", tr("Container backend"), tr("Podman or Docker usable"), True, ""),
+        PrereqSpec("compose", tr("Compose provider"), tr("required to start Windows"), True, ""),
     )
 
 
 def collect_answers(cfg: Config | None = None) -> SetupAnswers:
     """Prefill from CLI sources, or from an existing config on reinstall."""
+    from winpodx.backend.select import choose_backend
+    from winpodx.core.storage_migration import default_target_path
     from winpodx.utils.locale import detect_install_locale, detect_timezone
     from winpodx.utils.specs import detect_host_specs, recommend_tier
 
@@ -113,6 +127,9 @@ def collect_answers(cfg: Config | None = None) -> SetupAnswers:
             disk_size="64G",
             rdp_user="Docker",
             tuning_profile="auto",
+            backend=choose_backend(),
+            storage_path=str(default_target_path()),
+            win_iso="",
         )
     return SetupAnswers(
         win_version=cfg.pod.win_version or "11",
@@ -125,6 +142,9 @@ def collect_answers(cfg: Config | None = None) -> SetupAnswers:
         disk_size=cfg.pod.disk_size or "64G",
         rdp_user=cfg.rdp.user or "Docker",
         tuning_profile=cfg.pod.tuning_profile or "auto",
+        backend=cfg.pod.backend,
+        storage_path=cfg.pod.storage_path,
+        win_iso="",
     )
 
 
@@ -148,7 +168,9 @@ def host_spec_summary() -> str:
 def to_namespace(answers: SetupAnswers) -> argparse.Namespace:
     """Build the Namespace ``handle_setup`` / ``apply_setup_presets`` consume."""
     return argparse.Namespace(
-        backend=None,
+        backend=answers.backend,
+        storage_path=answers.storage_path or None,
+        win_iso=answers.win_iso or None,
         win_version=answers.win_version,
         update_image=False,
         migrate_storage=False,

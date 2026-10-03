@@ -306,6 +306,10 @@ unimplemented ideas here; put them in a plan file.
   no shadow. Hover (interactive rows only): `p.subtle_hover`.
 - **Actions:** `QLineEdit`/`QComboBox`/`QPushButton` 32px; `ToggleSwitch`
   (44 hit box); chevron rows use a bare 32px ghost glyph (`chevron_button_qss`).
+  `action_below=True` is opt-in: the action stacks under the copy at the
+  card's inner width. The default row is unchanged. The setup wizard uses it
+  for storage and ISO, with a wrapping selectable full-path preview, and for
+  Timezone, whose combo sits below the fully visible title at 840x640.
 - **Restyle:** `restyle_settings_cards(root)` re-reads `theme.*` on scheme change.
 - **Used by:** Dashboard rows, Settings groups, Tools, Info, Devices, License,
   Logs, reverse-open panel.
@@ -419,8 +423,18 @@ Retained in `_stat_bar.py` for reuse; not used on the Dashboard.
   `C.MANTLE` body, `QDialogButtonBox` strip -- see Inner controls). Scheme
   changes reach the bar only through `ThemeManager.scheme_changed ->
   title_bar.restyle()`; `ChromeDialog` never restyles the body.
+- **Setup wizard states:** the six-page installer keeps SettingsCard controls.
+  Fresh installs edit backend, storage directory, and optional local ISO.
+  Reinstall renders those three read-only, with the explanation in the card
+  description. Storage and ISO use the opt-in stacked action: the editor stays
+  editable on a fresh install, starts at the path prefix, and a wrapping
+  selectable preview shows the full value. A blank path hides the preview.
+  Reinstall leaves those editors read-only. Field errors use the existing warning callout plus
+  text, never colour alone. Destructive reinstall consent is a `ChromeDialog`
+  after Review; Cancel and Escape refuse and leave Review visible.
 - **Adopters:** `SetupWizardDialog` composes the same policy directly (it
-  predates `ChromeDialog`). `BusyDialog`, standalone `BringUpProgressDialog`,
+  predates `ChromeDialog`). The post-review wipe confirmation uses
+  `ChromeDialog`. `BusyDialog`, standalone `BringUpProgressDialog`,
   `AppProfileDialog`, `DeletedAppsDialog`, `DebloatPickerDialog`, and the two
   inline warning confirms inherit or construct `ChromeDialog`; the setup
   wizard embeds `BringUpProgressDialog(chrome=False)` to avoid nested chrome.

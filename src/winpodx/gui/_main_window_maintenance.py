@@ -287,18 +287,6 @@ class MaintenanceMixin(MaintenanceCardsMixin):
 
         from winpodx.gui._setup_wizard import SetupWizardDialog
 
-        if not _confirm_with_callout(
-            self,
-            tr("Reinstall Windows"),
-            tr(
-                "This destroys the Windows disk and everything installed in it, "
-                "then reinstalls Windows with the settings you choose. "
-                "Your WinPodX settings and app profiles are kept."
-            ),
-            tr("This cannot be undone."),
-            level="danger",
-        ):
-            return
         dlg = SetupWizardDialog(self, mode="reinstall", cfg=self.cfg)
         result = dlg.exec()
         if result != QDialog.DialogCode.Accepted:
@@ -655,7 +643,9 @@ class MaintenanceMixin(MaintenanceCardsMixin):
                 self.app_launch_failed.emit(
                     tr("Debloat failed (rc={rc}): {detail}").format(
                         rc=result.rc,
-                        detail=result.stderr.strip() or result.stdout.strip()[:200],
+                        detail="\n".join(
+                            part for part in (result.stderr.strip(), result.stdout.strip()) if part
+                        ),
                     )
                 )
             self.pod_status_updated.emit("running", cfg.rdp.ip)

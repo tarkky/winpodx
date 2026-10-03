@@ -35,6 +35,14 @@ def test_config_default_carries_current_schema_version() -> None:
     assert cfg.schema_version == SCHEMA_VERSION
 
 
+def test_example_schema_marker_matches_current_version() -> None:
+    from winpodx.core import config as cfg_mod
+
+    example = Path(__file__).resolve().parents[1] / "data" / "winpodx.toml.example"
+    data = cfg_mod.tomllib.loads(example.read_text(encoding="utf-8"))
+    assert data["schema_version"] == SCHEMA_VERSION
+
+
 def test_migrate_hook_is_noop_at_current_version() -> None:
     data = {"rdp": {"user": "alice"}, "schema_version": SCHEMA_VERSION}
     out = _migrate_config(dict(data), SCHEMA_VERSION)
@@ -146,6 +154,19 @@ def test_current_schema_explicit_ssd_false_survives_load_and_save(tmp_path: Path
         assert cfg.pod.ssd is False
         cfg.save()
         assert "ssd = false" in cfg_path.read_text(encoding="utf-8")
+        assert Config.load().pod.ssd is False
+
+
+def test_schema_3_upgrade_defaults_to_no_extra_ports_and_preserves_ssd(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "winpodx.toml"
+    cfg_path.write_text("schema_version = 3\n[pod]\nssd = false\n", encoding="utf-8")
+
+    with patch.object(Config, "path", classmethod(lambda cls: cfg_path)):
+        cfg = Config.load()
+        assert cfg.schema_version == SCHEMA_VERSION == 4
+        assert cfg.pod.ssd is False
+        assert cfg.pod.extra_ports == []
+        cfg.save()
         assert Config.load().pod.ssd is False
 
 
