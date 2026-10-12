@@ -9,6 +9,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-12
+
+Packaging correction for the pinned rdprrap archive and OBS desktop-integration resources.
+
+### Packaging
+
+- Packaging normalizers rewrote the pinned rdprrap ZIP metadata in 0.12.0 DEBs and OBS Fedora RPMs. Although its internal files were unchanged, OEM SHA256 verification rejected the archive, leaving the single-session fallback.
+- The correction preserves the original opaque ZIP bytes and existing SHA256 pin; verification and security checks are not relaxed.
+- The OBS SPEC is synchronized with the repository, including menu, icon, AppStream, and cleanup-helper resources at their FHS paths. SUSE packages require `hicolor-icon-theme` for native icon-directory ownership.
+- `_service` retains automatic `main` tracking, and normal tag-triggered rebuild automation uses the existing `OBS_TOKEN`. Keep `main` frozen after tagging until OBS builds finish so the packaged source matches the approved release.
+- Application code and normal Windows-app/data payloads are unchanged; this correction adds no features or Windows usage rights.
+
+### Upgrade guidance
+
+- Affected 0.12.0 DEB and OBS Fedora users should use corrected 0.12.1 packages once available. Installing a corrected host package alone does not repair an already-provisioned guest.
+- No existing user data or live Windows VM has been patched. Existing 0.12.0 tags and release assets are preserved.
+
 ## [0.12.0] - 2026-10-10
 
 Setup, desktop icons, guest discovery, and redistribution notices are updated.
@@ -26,7 +43,7 @@ WinPodX requires Python 3.10 or newer.
 - First GUI provisioning requires the guest agent. Automatic discovery retries use 60/120/180/240/300-second delays (#885); failed installation does not guarantee a populated menu.
 - GUI installation suppresses recovery notifications until the install flow ends (#887).
 - AppImage provenance collection records FreeRDP/dpkg ownership, license texts, wheel URLs and download hashes. `pip --report` records hashes; it is not prevalidated hash locking.
-- The candidate AppImage recipe pins Ubuntu 24.04, FreeRDP `3.32.1+dfsg-0ubuntu0.24.04.1`, Python `3.11.17+20261009`, and appimagetool `1.9.1`. The pipeline SHA256-verifies and mirrors source originals into `winpodx-appimage-sources.tar.gz`; tag builds attach it with `PROVENANCE.json`, `SOURCE-OFFER.txt`, and `SHA256SUMS` alongside the binary. Each artifact has its own provenance and source-delivery record; this is not blanket legal or security clearance.
+- The AppImage recipe pins Ubuntu 24.04, FreeRDP `3.32.1+dfsg-0ubuntu0.24.04.1`, Python `3.11.17+20261009`, and appimagetool `1.9.1`. SHA256-verified source originals are delivered in `winpodx-appimage-sources.tar.gz`, alongside `PROVENANCE.json`, `SOURCE-OFFER.txt`, and `SHA256SUMS`. Each artifact has its own provenance and source-delivery record; this is not blanket legal or security clearance.
 - Nix removes the unused Python libvirt dependency and raw `postInstall` copy, using wheel shared data instead.
 
 ### Fixed
@@ -44,9 +61,28 @@ WinPodX requires Python 3.10 or newer.
 - `pelite-macros 0.1.1` source commit `432e769bf3152f21452a4b8908639f5ed1595912` resolves and has the identical license; the supplement records that revision.
 - Shim `BUILDINFO.json` records locked inputs and two identical clean builds, SHA256 `f79f95408006b1caa0a0c638f8a6395dcf3d9e70ba04a63a08fb11fe67e0bc22`. MIT crate texts and Rust standard-library notices accompany guest copies.
 
-### Reports
+### Packaging Follow-up
 
-- Thanks @mikeshb for #886: guest-to-host copying worked after upgrading to FreeRDP `3.32.1+dfsg-0ubuntu0.24.04.1`, and the reporter closed the issue. The exact cause is unproven.
+- Original 0.12.0 DEB assets and inspected OBS Fedora 42/43/44 RPMs have a packaging defect: ZIP metadata normalization changes the pinned rdprrap archive's SHA256, so OEM verification rejects it and retains the single-session fallback. Original OBS RPMs also omit desktop-integration resources at their FHS paths.
+- The correction targets 0.12.1. Use its corrected packages when available; updating the host package alone does not repair an already-provisioned guest. Existing 0.12.0 tags and release assets are preserved.
+
+### Contributors
+
+Thanks to everyone who contributed issue reports, suggestions, and follow-up testing. These contributions informed this release and its follow-up investigation; acknowledgment does not imply that every referenced issue is resolved.
+
+- @realahmed7777: setup/storage feedback (#767) and the hide-all-apps request (#814).
+- @kroese: the improvement review and suggestions (#838).
+- @MirzaAyBaig12: declarative guest port forwarding (#826) and the NixOS setup report (#867).
+- @GameSoul7Eugene: the virtualization preflight request (#850).
+- @Zeik0s: the migration-warning request (#834).
+- @pnogaret2019-code: the connectivity report (#737).
+- @Hossam-Majrashi: the Arch Linux release-package request (#869).
+- @ismikes: the scheduled-task debloat report (#866).
+- @mathys-lopinto: the first file-open/tsclient readiness report (#833).
+- @h3nr1-d14z: the AppStream install-resource report (#871) and rollback/OEM-mount report (#872).
+- @t57541119-glitch: startup and cross-distribution troubleshooting feedback (#875).
+- @flomine: the password-rotation consistency report (#873).
+- @mikeshb: the guest-to-host file-copy report and retest (#886). Copying worked after upgrading to FreeRDP `3.32.1+dfsg-0ubuntu0.24.04.1`, and the contributor closed the issue; the exact cause is unproven.
 
 ## [0.11.0] - 2026-09-07
 
