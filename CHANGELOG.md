@@ -15,6 +15,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- Report which compose phase timed out during setup and how to diagnose it, rather than printing a `subprocess.TimeoutExpired` traceback. The diagnostic notes image-pull activity without exposing provider output, and `WINPODX_COMPOSE_TIMEOUT_SECS=0` still disables the timeout (#903). Thanks @a012-alex.
 - Keep the **Launch App**, **Terminate Session**, and **USB Devices** tray submenus open on GNOME/AppIndicator by skipping the `clear()` and re-add refresh when their content is unchanged, comparing launch parameters, session targets, USB bind identity, and checked state. Changed content still refreshes, and a checked-only USB change updates the existing action in place (#909). Thanks @sundaysfantasy.
 - GNOME reverse-open of guest-local files now answers the GVfs Domain prompt before the password (#896, #898). Thanks @DBVamsi.
 - Skip the optional USB bus mount with a warning when `/dev/bus/usb` is unavailable, allowing Windows VM setup to continue when its other prerequisites are met. Keep the `usb_live` default and PCI passthrough behavior, and avoid disabling SELinux confinement for a bus that is not mounted (#907). Reported by @kernalix7.
@@ -23,6 +24,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - Tray app entries, **Full Desktop**, and double-clicking the tray icon now run the same readiness preflight as CLI app launches before opening RDP, with failures recorded in the log and reported by notification instead of blocking silently. The tray stays responsive while readiness runs, and Quit waits for in-flight readiness before the final pod stop so a pending launch cannot restart the pod afterwards (#901). Thanks @danielabelski.
 - Repeated Full Desktop launches now request activation of the tracked FreeRDP window by PID via optional `wmctrl`/`xdotool`, with a warning and notification if the tools cannot activate it. The existing client and session tracking are preserved (#902). Thanks @danielabelski.
 - Keep the existing Windows autologon secret in sync when rotating a matching local account's password, without enabling autologon or changing its count (#894). Thanks @danielabelski.
+- Do not leave a pending password rotation when the required agent is unavailable before the change is submitted and the agent-only policy forbids falling back to FreeRDP (#904). Thanks @mpierce4131.
+- Allow FreeRDP to negotiate the external Windows host's security policy in manual mode rather than forcing managed-guest TLS. Document connecting to an existing Windows PC and limiting folder sharing (#900). Thanks @unisons.
 
 ## [0.12.1] - 2026-10-12
 
